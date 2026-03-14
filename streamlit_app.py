@@ -1,590 +1,489 @@
 import { useState, useEffect } from "react";
 
-const CACHE_KEY     = "macro-regime-v1";
-const HISTORY_KEY   = (y, m) => `macro-history-${y}-${String(m+1).padStart(2,"0")}`;
-const CACHE_TTL_HOURS = 24;
-const HISTORY_MONTHS  = 12;
+const SYSTEM_PROMPT = `You are a macroeconomic analyst. Your job is to research current economic data and calculate Growth and Inflation scores based on a specific scoring framework.
 
-const SYSTEM_PROMPT = `You are a macroeconomic analyst. Research current economic data and calculate Growth and Inflation scores.
+You have access to web search. Use it to find the LATEST available data for each indicator. Search for real, current values.
 
-GROWTH SCORE FRAMEWORK (cap final ±100):
-Monetary Policy (25%): rate cut prob >70%=+20, 40-70%=+10, neutral=0, hike 40-70%=-10, hike >70%=-20; real rates falling >0.5%=+10, stable=0, rising >0.5%=-10; Fed BS expanding >2% YoY=+10, stable=0, shrinking=-10; yield curve steepening >50bps=+5, flat=0, inverted >25bps=-10.
-Global Liquidity (20%): global CB BS >5% YoY=+20, 2-5%=+10, stable=0, -2-5%=-10, >-5%=-20.
-Fiscal Policy (15%): govt spending >5% YoY=+15, 2-5%=+5, flat=0, contracting=-10; deficit growing >1% GDP=+10, stable=0, shrinking=-10; major stimulus >2% GDP=+20, moderate=+10, tightening=-10.
-Labor Market (15%): unemployment falling >0.3% 6mo=+15, stable=+5, rising 0.3-0.7%=-10, rising >0.7%=-20; claims falling=+5, stable=0, rising=-10.
-Leading Indicators (15%, clamp ±30): Mfg PMI >55=+10,52-55=+5,48-52=0,45-48=-5,<45=-10,trend±5; Services PMI >55=+8,52-55=+4,48-52=0,45-48=-4,<45=-8; LEI >1% 6mo=+8,slight rise=+3,flat=0,slight fall=-5,fall >1%=-10; Retail sales >4% YoY=+6,2-4%=+3,0-2%=0,contracting=-5,<-2%=-8,momentum±3; GDPNow >3%=+6,2-3%=+3,1-2%=0,0-1%=-3,<0%=-6.
-Dollar (10%): DXY falling >5% 3mo=+15, falling 2-5%=+5, stable=0, rising 2-5%=-5, rising >5%=-15.
+GROWTH SCORE FRAMEWORK (capped at ±100):
 
-INFLATION SCORE FRAMEWORK (cap final ±100):
-Inflation Data (25%): CPI MoM >0.3%=+20,0.1-0.3%=+10,stable=0,declining=-10,sharply=-20; Core PCE >3%=+10,2-3%=+5,near 2%=0,<2%=-10; PPI rising rapidly=+10,falling=-10.
-Commodities (20%): BCOM 6mo >10%=+15,5-10%=+5,flat=0,-5to-10%=-5,<-10%=-10.
-Monetary Policy (20%): aggressive cuts=+15,moderate easing=+5,neutral=0,moderate tightening=-10,aggressive tightening=-20; real rates rising=-10,falling=+10; Fed BS expanding=+10,shrinking=-10.
-Labor/Wages (20%): wage growth >5% YoY=+15,3-5%=+5,2-3%=0,<2%=-10.
-Inflation Expectations (15%): 5Y breakeven rising >0.5% 3mo=+15,slightly=+5,stable=0,falling=-10.
+MONETARY POLICY (25% weight, max ±55 raw points):
+- Rate cut probability next 3 months (from CME FedWatch): >70% = +20, 40-70% = +10, neutral = 0, hike 40-70% = -10, hike >70% = -20
+- Real rates (10Y TIPS yield): falling >0.5% over 3 months = +10, stable = 0, rising >0.5% = -10
+- Fed balance sheet YoY: expanding >2% = +10, stable = 0, shrinking (QT) = -10
+- Yield curve (10Y-2Y spread): steepening >50bps = +5, flat = 0, inverted >25bps = -10
 
-Return ONLY valid JSON:
-{"timestamp":"ISO","growthScore":<-100to100>,"inflationScore":<-100to100>,"regime":"<Risk-On Inflation|Risk-On Disinflation|Risk-Off Inflation|Risk-Off Disinflation>","growthComponents":{"monetaryPolicy":{"score":<n>,"details":"data+reasoning"},"globalLiquidity":{"score":<n>,"details":"data+reasoning"},"fiscalPolicy":{"score":<n>,"details":"data+reasoning"},"laborMarket":{"score":<n>,"details":"data+reasoning"},"leadingIndicators":{"score":<n>,"details":"data+reasoning"},"dollarStrength":{"score":<n>,"details":"data+reasoning"}},"inflationComponents":{"inflationData":{"score":<n>,"details":"data+reasoning"},"commodityPrices":{"score":<n>,"details":"data+reasoning"},"monetaryPolicy":{"score":<n>,"details":"data+reasoning"},"laborMarket":{"score":<n>,"details":"data+reasoning"},"inflationExpectations":{"score":<n>,"details":"data+reasoning"}},"keyDataPoints":[{"label":"name","value":"val","source":"src"}],"summary":"2-3 sentence macro summary"}`;
+GLOBAL LIQUIDITY (20% weight, max ±20 raw points):
+- Global central bank balance sheets YoY: expanding >5% = +20, 2-5% = +10, stable = 0, contracting 2-5% = -10, contracting >5% = -20
 
-const HISTORY_PROMPT = (monthLabel, year, month) => `You are a macroeconomic analyst. Analyze the macro environment for ${monthLabel} and calculate Growth and Inflation scores using historical data from that period.
+FISCAL POLICY (15% weight, max ±40 raw points):
+- Government spending growth YoY: >5% = +15, 2-5% = +5, flat = 0, contracting = -10
+- Federal deficit change: increasing >1% GDP = +10, stable = 0, shrinking >1% GDP = -10
+- Stimulus legislation: major >2% GDP = +20, moderate = +10, tightening = -10
 
-Use the same scoring framework as follows (cap final ±100):
+LABOR MARKET (15% weight, max ±25 raw points):
+- Unemployment rate change over 6 months: falling >0.3% = +15, stable = +5, rising 0.3-0.7% = -10, rising >0.7% = -20
+- Initial jobless claims trend: falling = +5, stable = 0, rising = -10
 
-GROWTH SCORE: Monetary Policy 25%, Global Liquidity 20%, Fiscal Policy 15%, Labor Market 15%, Leading Indicators 15%, Dollar 10%.
-INFLATION SCORE: Inflation Data 25%, Commodities 20%, Monetary Policy 20%, Labor/Wages 20%, Inflation Expectations 15%.
+LEADING INDICATORS (15% weight, capped ±30 raw points):
+- Manufacturing PMI: >55=+10, 52-55=+5, 48-52=0, 45-48=-5, <45=-10; trend ±5
+- Services PMI: >55=+8, 52-55=+4, 48-52=0, 45-48=-4, <45=-8
+- LEI 6-month change: >1%=+8, slightly rising=+3, flat=0, slightly falling=-5, falling >1%=-10
+- Retail sales YoY: >4%=+6, 2-4%=+3, 0-2%=0, contracting=-5, <-2%=-8; momentum ±3
+- GDPNow forecast: >3%=+6, 2-3%=+3, 1-2%=0, 0-1%=-3, <0%=-6
+(Clamp leading indicators subtotal to ±30)
 
-Search for the economic data that was available at the end of ${monthLabel} — use indicators released during or just before that month (e.g. ISM PMI for that month, CPI for that month, unemployment rate, etc).
+DOLLAR STRENGTH (10% weight, max ±15 raw points):
+- DXY 3-month change: falling >5% = +15, falling 2-5% = +5, stable = 0, rising 2-5% = -5, rising >5% = -15
 
-Return ONLY valid JSON:
-{"timestamp":"${new Date(year, month, 15).toISOString()}","growthScore":<-100to100>,"inflationScore":<-100to100>,"regime":"<Risk-On Inflation|Risk-On Disinflation|Risk-Off Inflation|Risk-Off Disinflation>","growthComponents":{"monetaryPolicy":{"score":<n>,"details":"brief"},"globalLiquidity":{"score":<n>,"details":"brief"},"fiscalPolicy":{"score":<n>,"details":"brief"},"laborMarket":{"score":<n>,"details":"brief"},"leadingIndicators":{"score":<n>,"details":"brief"},"dollarStrength":{"score":<n>,"details":"brief"}},"inflationComponents":{"inflationData":{"score":<n>,"details":"brief"},"commodityPrices":{"score":<n>,"details":"brief"},"monetaryPolicy":{"score":<n>,"details":"brief"},"laborMarket":{"score":<n>,"details":"brief"},"inflationExpectations":{"score":<n>,"details":"brief"}},"keyDataPoints":[],"summary":"1-2 sentence summary of macro conditions in ${monthLabel}"}`;
+GROWTH SCORE CALCULATION:
+Raw subscores weighted: (MonPol_raw × 0.25) + (GlobalLiq_raw × 0.20) + (Fiscal_raw × 0.15) + (Labor_raw × 0.15) + (Leading_raw_clamped × 0.15) + (DXY_raw × 0.10)
+Scale to ±100 and clamp.
+
+INFLATION SCORE FRAMEWORK (capped at ±100):
+
+INFLATION DATA (25% weight):
+- CPI MoM: accelerating >0.3% = +20, 0.1-0.3% = +10, stable = 0, declining = -10, sharply declining = -20
+- Core PCE: >3% = +10, 2-3% = +5, near 2% = 0, <2% = -10
+- PPI trend: rising rapidly = +10, falling = -10
+
+COMMODITY PRICES (20% weight):
+- BCOM 6-month change: >10% = +15, 5-10% = +5, flat = 0, -5 to -10% = -5, < -10% = -10
+
+MONETARY POLICY - INFLATION LENS (20% weight):
+- Rate cut expectations: aggressive cuts = +15, moderate easing = +5, neutral = 0, moderate tightening = -10, aggressive tightening = -20
+- Real rates: rising >0.5% = -10, falling >0.5% = +10
+- Fed balance sheet: expanding = +10, shrinking = -10
+
+LABOR MARKET - WAGES (20% weight):
+- Wage growth YoY: >5% = +15, 3-5% = +5, 2-3% = 0, <2% = -10
+
+INFLATION EXPECTATIONS (15% weight):
+- 5Y breakeven 3-month change: rising >0.5% = +15, rising slightly = +5, stable = 0, falling = -10
+
+INFLATION SCORE CALCULATION:
+Weighted sum of subscores, scaled to ±100, clamped.
+
+INSTRUCTIONS:
+1. Search for current values of each indicator
+2. Apply the scoring rules
+3. Show your data findings and reasoning
+4. Return ONLY valid JSON in this exact format:
+
+{
+  "timestamp": "ISO date string",
+  "growthScore": <number -100 to 100>,
+  "inflationScore": <number -100 to 100>,
+  "regime": "<Risk-On Inflation|Risk-On Disinflation|Risk-Off Inflation|Risk-Off Disinflation>",
+  "growthComponents": {
+    "monetaryPolicy": { "score": <-55 to 55>, "details": "brief explanation with actual data values" },
+    "globalLiquidity": { "score": <-20 to 20>, "details": "brief explanation with actual data values" },
+    "fiscalPolicy": { "score": <-40 to 40>, "details": "brief explanation with actual data values" },
+    "laborMarket": { "score": <-25 to 25>, "details": "brief explanation with actual data values" },
+    "leadingIndicators": { "score": <-30 to 30>, "details": "brief explanation with actual data values" },
+    "dollarStrength": { "score": <-15 to 15>, "details": "brief explanation with actual data values" }
+  },
+  "inflationComponents": {
+    "inflationData": { "score": <number>, "details": "brief explanation with actual data values" },
+    "commodityPrices": { "score": <number>, "details": "brief explanation with actual data values" },
+    "monetaryPolicy": { "score": <number>, "details": "brief explanation with actual data values" },
+    "laborMarket": { "score": <number>, "details": "brief explanation with actual data values" },
+    "inflationExpectations": { "score": <number>, "details": "brief explanation with actual data values" }
+  },
+  "keyDataPoints": [
+    { "label": "indicator name", "value": "current value", "source": "source name" }
+  ],
+  "summary": "2-3 sentence macro regime summary"
+}
+
+Return ONLY the JSON, no other text.`;
 
 const REGIME_CONFIG = {
-  "Risk-On Inflation":     { color:"#BA7517", bg:"rgba(186,117,23,0.08)",  border:"rgba(186,117,23,0.25)", icon:"↗", desc:"Growth accelerating · Prices rising",    assets:["Commodities","Energy","Financials","TIPS","EM equities"],    short:"ROI"  },
-  "Risk-On Disinflation":  { color:"#0F6E56", bg:"rgba(15,110,86,0.08)",   border:"rgba(15,110,86,0.25)",  icon:"↗", desc:"Growth accelerating · Prices cooling", assets:["Growth equities","Tech","Small caps","Corp bonds","Crypto"],  short:"ROD"  },
-  "Risk-Off Inflation":    { color:"#993C1D", bg:"rgba(153,60,29,0.08)",   border:"rgba(153,60,29,0.25)",  icon:"↘", desc:"Growth slowing · Prices rising",      assets:["Gold","Short-dur bonds","Cash","Defensives"],                  short:"ROFI" },
-  "Risk-Off Disinflation": { color:"#185FA5", bg:"rgba(24,95,165,0.08)",   border:"rgba(24,95,165,0.25)",  icon:"↘", desc:"Growth slowing · Prices cooling",     assets:["Long Treasuries","Gold","Cash","Utilities","REITs"],          short:"ROFD" },
+  "Risk-On Inflation": {
+    color: "#FF6B35",
+    bg: "rgba(255,107,53,0.12)",
+    border: "rgba(255,107,53,0.4)",
+    icon: "↗",
+    desc: "Growth accelerating + Prices rising",
+    favor: ["Commodities", "Energy", "Financials", "TIPS", "EM equities"],
+  },
+  "Risk-On Disinflation": {
+    color: "#00D4AA",
+    bg: "rgba(0,212,170,0.12)",
+    border: "rgba(0,212,170,0.4)",
+    icon: "↗",
+    desc: "Growth accelerating + Prices cooling",
+    favor: ["Growth equities", "Tech", "Small caps", "Corp bonds", "Crypto"],
+  },
+  "Risk-Off Inflation": {
+    color: "#FF4757",
+    bg: "rgba(255,71,87,0.12)",
+    border: "rgba(255,71,87,0.4)",
+    icon: "↘",
+    desc: "Growth slowing + Prices rising",
+    favor: ["Gold", "Commodities", "Short-dur bonds", "Cash", "Defensives"],
+  },
+  "Risk-Off Disinflation": {
+    color: "#5B8DEF",
+    bg: "rgba(91,141,239,0.12)",
+    border: "rgba(91,141,239,0.4)",
+    icon: "↘",
+    desc: "Growth slowing + Prices cooling",
+    favor: ["Long-duration Treasuries", "Gold", "Cash", "Utilities", "REITs"],
+  },
 };
 
-const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-function getMonthSlots(n) {
-  const slots = [];
-  const now = new Date();
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    slots.push({ year: d.getFullYear(), month: d.getMonth(), label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`, short: `${MONTH_NAMES[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`, isCurrent: i === 0 });
-  }
-  return slots;
-}
-
-function hoursAgo(iso) { return (Date.now() - new Date(iso).getTime()) / 36e5; }
-function formatAge(iso) {
-  const h = hoursAgo(iso);
-  if (h < 1) return `${Math.round(h*60)}m ago`;
-  if (h < 24) return `${Math.round(h)}h ago`;
-  return `${Math.round(h/24)}d ago`;
-}
-
-async function callClaude(systemPrompt, userMsg) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 3000,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMsg }],
-    }),
-  });
-  const raw = await res.json();
-  const text = (raw.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("");
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("No JSON in response");
-  return JSON.parse(match[0]);
-}
-
-// ── Sub-components ──────────────────────────────────────────────────────────
-
 function ScoreGauge({ score, label, color }) {
+  const pct = ((score + 100) / 200) * 100;
+  const isPositive = score >= 0;
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
-        <span style={{ fontSize:10, letterSpacing:"0.12em", textTransform:"uppercase", color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)" }}>{label}</span>
-        <span style={{ fontSize:26, fontWeight:500, color, fontFamily:"var(--font-mono)", lineHeight:1 }}>{score>=0?"+":""}{score}</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "#888", fontFamily: "'DM Mono', monospace" }}>{label}</span>
+        <span style={{ fontSize: 28, fontWeight: 700, color, fontFamily: "'DM Mono', monospace", lineHeight: 1 }}>
+          {isPositive ? "+" : ""}{score}
+        </span>
       </div>
-      <div style={{ height:6, background:"var(--color-border-tertiary)", borderRadius:3, overflow:"hidden", position:"relative" }}>
-        <div style={{ position:"absolute", left:"50%", top:0, width:"0.5px", height:"100%", background:"var(--color-border-secondary)", zIndex:2 }} />
-        <div style={{ position:"absolute", height:"100%", background:color, borderRadius:3, transition:"all 1s cubic-bezier(0.16,1,0.3,1)", left: score>=0?"50%":`${50+score/2}%`, width:`${Math.abs(score)/2}%` }} />
+      <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", position: "relative" }}>
+        <div style={{ position: "absolute", left: "50%", top: 0, width: 1, height: "100%", background: "rgba(255,255,255,0.2)", zIndex: 2 }} />
+        <div style={{
+          position: "absolute",
+          height: "100%",
+          background: color,
+          borderRadius: 3,
+          transition: "all 1s cubic-bezier(0.16,1,0.3,1)",
+          left: score >= 0 ? "50%" : `${pct}%`,
+          width: `${Math.abs(score) / 2}%`,
+        }} />
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between" }}>
-        <span style={{ fontSize:9, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)", opacity:0.5 }}>-100</span>
-        <span style={{ fontSize:9, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)", opacity:0.5 }}>+100</span>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 9, color: "#555", fontFamily: "'DM Mono', monospace" }}>-100 RISK-OFF</span>
+        <span style={{ fontSize: 9, color: "#555", fontFamily: "'DM Mono', monospace" }}>RISK-ON +100</span>
       </div>
     </div>
   );
 }
 
-function QuadrantChart({ growthScore, inflationScore, regime }) {
-  const cfg = REGIME_CONFIG[regime] || {};
-  const x = 50 + (growthScore/100)*42, y = 50 - (inflationScore/100)*42;
-  return (
-    <div style={{ position:"relative", width:"100%", paddingBottom:"100%", background:"var(--color-background-secondary)", borderRadius:"var(--border-radius-lg)", border:"0.5px solid var(--color-border-tertiary)", overflow:"hidden" }}>
-      <div style={{ position:"absolute", inset:0 }}>
-        <div style={{ position:"absolute", left:"50%", top:0, bottom:0, width:"0.5px", background:"var(--color-border-secondary)" }} />
-        <div style={{ position:"absolute", top:"50%", left:0, right:0, height:"0.5px", background:"var(--color-border-secondary)" }} />
-        <span style={{ position:"absolute", top:5, left:"50%", transform:"translateX(-50%)", fontSize:7, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)", opacity:0.5 }}>INFL</span>
-        <span style={{ position:"absolute", bottom:5, left:"50%", transform:"translateX(-50%)", fontSize:7, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)", opacity:0.5 }}>DISINFL</span>
-        <div style={{ position:"absolute", width:12, height:12, borderRadius:"50%", background:cfg.color||"#888", left:`calc(${x}% - 6px)`, top:`calc(${y}% - 6px)`, transition:"all 1s cubic-bezier(0.16,1,0.3,1)", boxShadow:`0 0 0 3px ${(cfg.color||"#888")}30`, zIndex:10 }} />
-      </div>
-    </div>
-  );
-}
-
-function ComponentRow({ label, score, maxAbs, color, details }) {
+function ComponentBar({ label, score, maxAbs, color, details }) {
   const [open, setOpen] = useState(false);
-  const pct = Math.abs(score)/maxAbs*50;
+  const pct = Math.abs(score) / maxAbs * 100;
   return (
-    <div style={{ borderBottom:"0.5px solid var(--color-border-tertiary)", paddingBottom:10, marginBottom:10 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10, cursor:"pointer" }} onClick={()=>setOpen(o=>!o)}>
-        <span style={{ fontSize:10, color:"var(--color-text-secondary)", width:12, flexShrink:0, fontFamily:"var(--font-mono)" }}>{open?"▾":"▸"}</span>
-        <span style={{ flex:1, fontSize:12, color:"var(--color-text-primary)" }}>{label}</span>
-        <div style={{ width:80, height:4, background:"var(--color-border-tertiary)", borderRadius:2, overflow:"hidden", position:"relative", flexShrink:0 }}>
-          <div style={{ position:"absolute", left:"50%", top:0, width:"0.5px", height:"100%", background:"var(--color-border-secondary)" }} />
-          <div style={{ position:"absolute", height:"100%", background:color, borderRadius:2, left:score>=0?"50%":`${50-pct}%`, width:`${pct}%` }} />
+    <div style={{ borderBottom: "1px solid rgba(255,255,255,0.05)", paddingBottom: 10, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
+        <span style={{ fontSize: 10, color: "#666", width: 14, flexShrink: 0, fontFamily: "'DM Mono', monospace" }}>{open ? "▾" : "▸"}</span>
+        <span style={{ flex: 1, fontSize: 11, color: "#aaa", letterSpacing: "0.05em" }}>{label}</span>
+        <div style={{ width: 80, height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden", position: "relative" }}>
+          <div style={{ position: "absolute", left: "50%", top: 0, width: 1, height: "100%", background: "rgba(255,255,255,0.15)" }} />
+          <div style={{
+            position: "absolute", height: "100%", background: color, borderRadius: 2,
+            left: score >= 0 ? "50%" : `${50 - pct / 2}%`,
+            width: `${pct / 2}%`,
+          }} />
         </div>
-        <span style={{ fontSize:12, fontWeight:500, color, fontFamily:"var(--font-mono)", width:32, textAlign:"right" }}>{score>=0?"+":""}{score}</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color, fontFamily: "'DM Mono', monospace", width: 32, textAlign: "right" }}>
+          {score >= 0 ? "+" : ""}{score}
+        </span>
       </div>
       {open && details && (
-        <div style={{ marginTop:6, marginLeft:22, padding:"8px 12px", background:"var(--color-background-secondary)", borderRadius:"var(--border-radius-md)", borderLeft:`2px solid ${color}50`, fontSize:11, color:"var(--color-text-secondary)", lineHeight:1.7 }}>{details}</div>
+        <div style={{ marginTop: 8, marginLeft: 24, padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 6, borderLeft: `2px solid ${color}40` }}>
+          <p style={{ margin: 0, fontSize: 11, color: "#777", lineHeight: 1.6 }}>{details}</p>
+        </div>
       )}
     </div>
   );
 }
 
-// ── Timeline chart ───────────────────────────────────────────────────────────
-
-function TimelineChart({ slots, history, fetchingMonths, onFetchMonth, selectedMonth, onSelectMonth }) {
-  const [tooltip, setTooltip] = useState(null);
-
+function QuadrantChart({ growthScore, inflationScore, regime }) {
+  const x = 50 + (growthScore / 100) * 45;
+  const y = 50 - (inflationScore / 100) * 45;
+  const cfg = REGIME_CONFIG[regime] || {};
   return (
-    <div style={{ background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", overflow:"hidden", marginBottom:16 }}>
-      {/* Header */}
-      <div style={{ padding:"12px 20px", borderBottom:"0.5px solid var(--color-border-tertiary)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div>
-          <span style={{ fontSize:11, fontWeight:500, color:"var(--color-text-primary)" }}>Regime shift timeline</span>
-          <span style={{ fontSize:11, color:"var(--color-text-secondary)", marginLeft:8 }}>Last {HISTORY_MONTHS} months</span>
-        </div>
-        {/* Legend */}
-        <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-          {Object.entries(REGIME_CONFIG).map(([k,v]) => (
-            <div key={k} style={{ display:"flex", alignItems:"center", gap:4 }}>
-              <div style={{ width:8, height:8, borderRadius:2, background:v.color, flexShrink:0 }} />
-              <span style={{ fontSize:10, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)" }}>{v.short}</span>
-            </div>
-          ))}
-        </div>
+    <div style={{ position: "relative", width: "100%", paddingBottom: "100%", background: "rgba(255,255,255,0.02)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)", overflow: "hidden" }}>
+      <div style={{ position: "absolute", inset: 0 }}>
+        {/* Quadrant backgrounds */}
+        <div style={{ position: "absolute", left: "50%", top: 0, right: 0, bottom: "50%", background: "rgba(255,107,53,0.04)" }} />
+        <div style={{ position: "absolute", left: 0, top: 0, right: "50%", bottom: "50%", background: "rgba(255,71,87,0.04)" }} />
+        <div style={{ position: "absolute", left: "50%", top: "50%", right: 0, bottom: 0, background: "rgba(0,212,170,0.04)" }} />
+        <div style={{ position: "absolute", left: 0, top: "50%", right: "50%", bottom: 0, background: "rgba(91,141,239,0.04)" }} />
+        {/* Axes */}
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "rgba(255,255,255,0.08)" }} />
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: "rgba(255,255,255,0.08)" }} />
+        {/* Labels */}
+        <span style={{ position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)", fontSize: 8, color: "#FF4757", letterSpacing: "0.1em", fontFamily: "'DM Mono', monospace" }}>INFLATION</span>
+        <span style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)", fontSize: 8, color: "#5B8DEF", letterSpacing: "0.1em", fontFamily: "'DM Mono', monospace" }}>DISINFLATION</span>
+        <span style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%) rotate(90deg)", fontSize: 8, color: "#00D4AA", letterSpacing: "0.1em", fontFamily: "'DM Mono', monospace", transformOrigin: "center" }}>RISK-ON</span>
+        <span style={{ position: "absolute", left: 6, top: "50%", transform: "translateY(-50%) rotate(-90deg)", fontSize: 8, color: "#FF6B35", letterSpacing: "0.1em", fontFamily: "'DM Mono', monospace", transformOrigin: "center" }}>RISK-OFF</span>
+        {/* Point */}
+        <div style={{
+          position: "absolute", width: 14, height: 14, borderRadius: "50%",
+          background: cfg.color || "#fff",
+          boxShadow: `0 0 16px ${cfg.color || "#fff"}80`,
+          left: `calc(${x}% - 7px)`, top: `calc(${y}% - 7px)`,
+          transition: "all 1s cubic-bezier(0.16,1,0.3,1)",
+          zIndex: 10,
+        }} />
+        <div style={{
+          position: "absolute", width: 28, height: 28, borderRadius: "50%",
+          border: `1px solid ${cfg.color || "#fff"}40`,
+          left: `calc(${x}% - 14px)`, top: `calc(${y}% - 14px)`,
+          transition: "all 1s cubic-bezier(0.16,1,0.3,1)",
+          animation: "pulse 2s infinite",
+        }} />
       </div>
-
-      {/* Score lines + regime bars */}
-      <div style={{ padding:"20px 20px 0" }}>
-
-        {/* Score line chart area */}
-        <div style={{ position:"relative", height:80, marginBottom:4 }}>
-          {/* Zero line */}
-          <div style={{ position:"absolute", left:0, right:0, top:"50%", height:"0.5px", background:"var(--color-border-tertiary)" }} />
-          {/* +50 / -50 guides */}
-          <div style={{ position:"absolute", left:0, right:0, top:"25%", height:"0.5px", background:"var(--color-border-tertiary)", opacity:0.4 }} />
-          <div style={{ position:"absolute", left:0, right:0, top:"75%", height:"0.5px", background:"var(--color-border-tertiary)", opacity:0.4 }} />
-          {/* Y labels */}
-          <span style={{ position:"absolute", right:0, top:0, fontSize:8, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", opacity:0.5 }}>+100</span>
-          <span style={{ position:"absolute", right:0, top:"48%", fontSize:8, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", opacity:0.5 }}>0</span>
-          <span style={{ position:"absolute", right:0, bottom:0, fontSize:8, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", opacity:0.5 }}>-100</span>
-
-          <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", overflow:"visible" }} preserveAspectRatio="none">
-            {/* Growth line */}
-            {slots.map((s, i) => {
-              const d = history[`${s.year}-${s.month}`];
-              if (!d || i === slots.length-1) return null;
-              const next = slots[i+1];
-              const nd = history[`${next.year}-${next.month}`];
-              if (!nd) return null;
-              const x1 = (i / (slots.length-1)) * 100;
-              const x2 = ((i+1) / (slots.length-1)) * 100;
-              const y1 = 50 - (d.growthScore/100)*45;
-              const y2 = 50 - (nd.growthScore/100)*45;
-              return <line key={`g${i}`} x1={`${x1}%`} y1={`${y1}%`} x2={`${x2}%`} y2={`${y2}%`} stroke="#0F6E56" strokeWidth="1.5" strokeOpacity="0.7" />;
-            })}
-            {/* Inflation line */}
-            {slots.map((s, i) => {
-              const d = history[`${s.year}-${s.month}`];
-              if (!d || i === slots.length-1) return null;
-              const next = slots[i+1];
-              const nd = history[`${next.year}-${next.month}`];
-              if (!nd) return null;
-              const x1 = (i / (slots.length-1)) * 100;
-              const x2 = ((i+1) / (slots.length-1)) * 100;
-              const y1 = 50 - (d.inflationScore/100)*45;
-              const y2 = 50 - (nd.inflationScore/100)*45;
-              return <line key={`inf${i}`} x1={`${x1}%`} y1={`${y1}%`} x2={`${x2}%`} y2={`${y2}%`} stroke="#BA7517" strokeWidth="1.5" strokeOpacity="0.7" strokeDasharray="3,2" />;
-            })}
-            {/* Dots */}
-            {slots.map((s, i) => {
-              const d = history[`${s.year}-${s.month}`];
-              if (!d) return null;
-              const x = (i / (slots.length-1)) * 100;
-              const gy = 50 - (d.growthScore/100)*45;
-              const iy = 50 - (d.inflationScore/100)*45;
-              const isSelected = selectedMonth === `${s.year}-${s.month}`;
-              return (
-                <g key={`dots${i}`}>
-                  <circle cx={`${x}%`} cy={`${gy}%`} r={isSelected?4:2.5} fill="#0F6E56" opacity="0.9" style={{cursor:"pointer"}} onClick={()=>onSelectMonth(`${s.year}-${s.month}`)} />
-                  <circle cx={`${x}%`} cy={`${iy}%`} r={isSelected?4:2.5} fill="#BA7517" opacity="0.9" style={{cursor:"pointer"}} onClick={()=>onSelectMonth(`${s.year}-${s.month}`)} />
-                </g>
-              );
-            })}
-          </svg>
-        </div>
-
-        {/* Line legend */}
-        <div style={{ display:"flex", gap:16, marginBottom:12, justifyContent:"flex-end" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#0F6E56" strokeWidth="1.5"/></svg>
-            <span style={{ fontSize:10, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)" }}>Growth</span>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#BA7517" strokeWidth="1.5" strokeDasharray="3,2"/></svg>
-            <span style={{ fontSize:10, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)" }}>Inflation</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Regime bar row */}
-      <div style={{ display:"grid", gridTemplateColumns:`repeat(${slots.length}, 1fr)`, gap:2, padding:"0 20px 16px" }}>
-        {slots.map((s) => {
-          const key = `${s.year}-${s.month}`;
-          const d = history[key];
-          const cfg = d ? (REGIME_CONFIG[d.regime] || {}) : null;
-          const isFetching = fetchingMonths.has(key);
-          const isSelected = selectedMonth === key;
-
-          return (
-            <div
-              key={key}
-              onClick={() => d && onSelectMonth(isSelected ? null : key)}
-              style={{
-                display:"flex", flexDirection:"column", alignItems:"center", gap:4,
-                cursor: d ? "pointer" : "default",
-              }}
-            >
-              {/* Regime color block */}
-              <div style={{
-                width:"100%", height:28, borderRadius:4,
-                background: isFetching ? "var(--color-border-tertiary)"
-                  : d ? cfg.color
-                  : "var(--color-background-secondary)",
-                border: isSelected ? `2px solid var(--color-text-primary)` : `0.5px solid ${d ? cfg.color+"50" : "var(--color-border-tertiary)"}`,
-                display:"flex", alignItems:"center", justifyContent:"center",
-                transition:"all 0.2s", opacity: d ? 1 : 0.4,
-                position:"relative", overflow:"hidden",
-              }}>
-                {isFetching && (
-                  <div style={{ width:8, height:8, border:"1px solid rgba(255,255,255,0.5)", borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
-                )}
-                {!isFetching && !d && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onFetchMonth(s); }}
-                    style={{ background:"none", border:"none", cursor:"pointer", fontSize:12, color:"var(--color-text-secondary)", padding:0, lineHeight:1 }}
-                    title={`Fetch ${s.label}`}
-                  >+</button>
-                )}
-                {!isFetching && d && (
-                  <span style={{ fontSize:8, fontFamily:"var(--font-mono)", color:"white", fontWeight:500, opacity:0.85, letterSpacing:"0.05em" }}>{cfg.short}</span>
-                )}
-                {s.isCurrent && (
-                  <div style={{ position:"absolute", top:2, right:2, width:4, height:4, borderRadius:"50%", background:"white", opacity:0.6 }} />
-                )}
-              </div>
-              {/* Month label */}
-              <span style={{ fontSize:9, fontFamily:"var(--font-mono)", color: isSelected ? "var(--color-text-primary)" : "var(--color-text-secondary)", letterSpacing:"0.04em", opacity: isSelected ? 1 : 0.7 }}>{s.short}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Selected month detail */}
-      {selectedMonth && history[selectedMonth] && (() => {
-        const d = history[selectedMonth];
-        const cfg = REGIME_CONFIG[d.regime] || {};
-        return (
-          <div style={{ borderTop:"0.5px solid var(--color-border-tertiary)", padding:"12px 20px", background:"var(--color-background-secondary)", display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <div style={{ width:10, height:10, borderRadius:2, background:cfg.color }} />
-              <span style={{ fontSize:13, fontWeight:500, color:cfg.color }}>{d.regime}</span>
-            </div>
-            <div style={{ display:"flex", gap:16 }}>
-              <span style={{ fontSize:11, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)" }}>
-                Growth: <span style={{ color:"#0F6E56", fontWeight:500 }}>{d.growthScore>=0?"+":""}{Math.round(d.growthScore)}</span>
-              </span>
-              <span style={{ fontSize:11, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)" }}>
-                Inflation: <span style={{ color:"#BA7517", fontWeight:500 }}>{d.inflationScore>=0?"+":""}{Math.round(d.inflationScore)}</span>
-              </span>
-            </div>
-            {d.summary && <p style={{ flex:1, margin:0, fontSize:11, color:"var(--color-text-secondary)", lineHeight:1.6 }}>{d.summary}</p>}
-            <button onClick={()=>onSelectMonth(null)} style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, color:"var(--color-text-secondary)", padding:"2px 6px" }}>✕</button>
-          </div>
-        );
-      })()}
     </div>
   );
 }
 
-// ── Main dashboard ───────────────────────────────────────────────────────────
-
 export default function MacroDashboard() {
-  const [data, setData]             = useState(null);
-  const [status, setStatus]         = useState("loading");
-  const [cacheAge, setCacheAge]     = useState(null);
-  const [tab, setTab]               = useState("growth");
-  const [errorMsg, setErrorMsg]     = useState("");
-  const [history, setHistory]       = useState({});       // { "2025-2": {...} }
-  const [fetchingMonths, setFetchingMonths] = useState(new Set());
-  const [selectedMonth, setSelectedMonth]  = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [tab, setTab] = useState("growth");
 
-  const slots = getMonthSlots(HISTORY_MONTHS);
-  const nowSlot = slots[slots.length - 1];
-
-  useEffect(() => { loadFromCache(); }, []);
-
-  async function loadFromCache() {
-    setStatus("loading");
+  async function fetchRegime() {
+    setLoading(true);
+    setError(null);
+    setData(null);
     try {
-      const result = await window.storage.get(CACHE_KEY, true);
-      if (result && result.value) {
-        const cached = JSON.parse(result.value);
-        setData(cached);
-        setCacheAge(formatAge(cached.timestamp));
-        // seed current month in history
-        setHistory(h => ({ ...h, [`${nowSlot.year}-${nowSlot.month}`]: cached }));
-        setStatus("cached");
-      } else {
-        setStatus("empty");
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          system: SYSTEM_PROMPT,
+          messages: [{
+            role: "user",
+            content: `Today is ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}. 
+            
+Search for the latest values for ALL of these indicators and calculate the macro regime scores:
+
+1. CME FedWatch - current rate cut probability next 3 months
+2. 10Y TIPS real yield - current level and 3-month change
+3. Federal Reserve balance sheet - current size and YoY change
+4. 10Y-2Y Treasury yield spread (current)
+5. Global central bank balance sheets - aggregate YoY change
+6. US government spending YoY growth (latest)
+7. US federal deficit as % of GDP and recent trend
+8. US unemployment rate - current and 6-month change
+9. Initial jobless claims - recent trend
+10. ISM Manufacturing PMI - latest and 3-month trend
+11. ISM Services PMI - latest reading
+12. Conference Board LEI - latest 6-month change
+13. US Retail Sales - latest YoY and 3-month momentum
+14. Atlanta Fed GDPNow - latest forecast
+15. DXY US Dollar Index - current level and 3-month change
+16. CPI MoM - latest reading
+17. Core PCE - latest reading
+18. PPI - latest trend
+19. Bloomberg Commodity Index (BCOM) - 6-month change
+20. Average hourly earnings YoY wage growth
+21. 5-Year breakeven inflation rate - current and 3-month change
+
+After gathering data, calculate both Growth Score and Inflation Score using the frameworks provided. Return the JSON result.`
+          }],
+        }),
+      });
+
+      const raw = await res.json();
+      
+      // Extract text from response (may include tool use blocks)
+      let jsonText = "";
+      for (const block of raw.content || []) {
+        if (block.type === "text") jsonText += block.text;
       }
-    } catch { setStatus("empty"); }
 
-    // Load existing history slots from shared cache
-    for (const s of slots.slice(0, -1)) {
-      const key = HISTORY_KEY(s.year, s.month);
-      try {
-        const r = await window.storage.get(key, true);
-        if (r && r.value) {
-          setHistory(h => ({ ...h, [`${s.year}-${s.month}`]: JSON.parse(r.value) }));
-        }
-      } catch {}
-    }
-  }
-
-  async function runRefresh() {
-    setStatus("refreshing");
-    setErrorMsg("");
-    try {
-      const today = new Date().toLocaleDateString("en-US", { month:"long", day:"numeric", year:"numeric" });
-      const parsed = await callClaude(SYSTEM_PROMPT,
-        `Today is ${today}. Fetch latest values for: CME FedWatch rate cut probability, 10Y TIPS real yield + 3mo change, Fed balance sheet YoY, 10Y-2Y spread, global CB balance sheets, US govt spending YoY, unemployment rate + 6mo trend, ISM Manufacturing PMI + trend, ISM Services PMI, Conference Board LEI 6mo, retail sales YoY + momentum, Atlanta Fed GDPNow, DXY 3mo change, CPI MoM, Core PCE, PPI trend, BCOM 6mo change, average hourly earnings YoY, 5Y breakeven + 3mo change. Calculate both scores. Return only JSON.`
-      );
-      parsed.timestamp = parsed.timestamp || new Date().toISOString();
-
-      await window.storage.set(CACHE_KEY, JSON.stringify(parsed), true);
-      // Also save to this month's history slot
-      await window.storage.set(HISTORY_KEY(nowSlot.year, nowSlot.month), JSON.stringify(parsed), true);
-
+      // Parse JSON
+      const match = jsonText.match(/\{[\s\S]*\}/);
+      if (!match) throw new Error("No JSON found in response");
+      const parsed = JSON.parse(match[0]);
       setData(parsed);
-      setCacheAge(formatAge(parsed.timestamp));
-      setHistory(h => ({ ...h, [`${nowSlot.year}-${nowSlot.month}`]: parsed }));
-      setStatus("cached");
-    } catch(e) {
-      setErrorMsg(e.message);
-      setStatus(data ? "cached" : "error");
-    }
-  }
-
-  async function fetchHistoryMonth(slot) {
-    const key = `${slot.year}-${slot.month}`;
-    setFetchingMonths(s => new Set([...s, key]));
-    try {
-      const parsed = await callClaude(
-        HISTORY_PROMPT(slot.label, slot.year, slot.month),
-        `Analyze the macro environment for ${slot.label}. Search for economic data from that period and calculate the regime scores. Return only JSON.`
-      );
-      parsed.timestamp = parsed.timestamp || new Date(slot.year, slot.month, 15).toISOString();
-      await window.storage.set(HISTORY_KEY(slot.year, slot.month), JSON.stringify(parsed), true);
-      setHistory(h => ({ ...h, [key]: parsed }));
-    } catch(e) {
-      setErrorMsg(`Failed to fetch ${slot.label}: ${e.message}`);
+    } catch (e) {
+      setError(e.message);
     } finally {
-      setFetchingMonths(s => { const n = new Set(s); n.delete(key); return n; });
+      setLoading(false);
     }
   }
 
-  const isStale = data ? hoursAgo(data.timestamp) >= CACHE_TTL_HOURS : true;
-  const cfg = data ? (REGIME_CONFIG[data.regime] || {}) : {};
+  const regime = data?.regime;
+  const cfg = regime ? REGIME_CONFIG[regime] : null;
 
-  const activeComps = tab === "growth"
-    ? [
-        { label:"Monetary Policy",    key:"monetaryPolicy",    max:55 },
-        { label:"Global Liquidity",   key:"globalLiquidity",   max:20 },
-        { label:"Fiscal Policy",      key:"fiscalPolicy",      max:40 },
-        { label:"Labor Market",       key:"laborMarket",       max:25 },
-        { label:"Leading Indicators", key:"leadingIndicators", max:30 },
-        { label:"Dollar Strength",    key:"dollarStrength",    max:15 },
-      ]
-    : [
-        { label:"Inflation Data (CPI/PCE/PPI)", key:"inflationData",        max:40 },
-        { label:"Commodity Prices",             key:"commodityPrices",       max:15 },
-        { label:"Monetary Policy",              key:"monetaryPolicy",        max:40 },
-        { label:"Labor Market (Wages)",         key:"laborMarket",           max:15 },
-        { label:"Inflation Expectations",       key:"inflationExpectations", max:15 },
-      ];
-  const activeSource = tab === "growth" ? data?.growthComponents : data?.inflationComponents;
-  const activeColor  = tab === "growth" ? "#0F6E56" : "#BA7517";
+  const growthComponents = data ? [
+    { label: "Monetary Policy", score: data.growthComponents?.monetaryPolicy?.score ?? 0, max: 55, details: data.growthComponents?.monetaryPolicy?.details },
+    { label: "Global Liquidity", score: data.growthComponents?.globalLiquidity?.score ?? 0, max: 20, details: data.growthComponents?.globalLiquidity?.details },
+    { label: "Fiscal Policy", score: data.growthComponents?.fiscalPolicy?.score ?? 0, max: 40, details: data.growthComponents?.fiscalPolicy?.details },
+    { label: "Labor Market", score: data.growthComponents?.laborMarket?.score ?? 0, max: 25, details: data.growthComponents?.laborMarket?.details },
+    { label: "Leading Indicators", score: data.growthComponents?.leadingIndicators?.score ?? 0, max: 30, details: data.growthComponents?.leadingIndicators?.details },
+    { label: "Dollar Strength", score: data.growthComponents?.dollarStrength?.score ?? 0, max: 15, details: data.growthComponents?.dollarStrength?.details },
+  ] : [];
+
+  const inflationComponents = data ? [
+    { label: "Inflation Data", score: data.inflationComponents?.inflationData?.score ?? 0, max: 40, details: data.inflationComponents?.inflationData?.details },
+    { label: "Commodity Prices", score: data.inflationComponents?.commodityPrices?.score ?? 0, max: 15, details: data.inflationComponents?.commodityPrices?.details },
+    { label: "Monetary Policy", score: data.inflationComponents?.monetaryPolicy?.score ?? 0, max: 40, details: data.inflationComponents?.monetaryPolicy?.details },
+    { label: "Labor Market (Wages)", score: data.inflationComponents?.laborMarket?.score ?? 0, max: 15, details: data.inflationComponents?.laborMarket?.details },
+    { label: "Inflation Expectations", score: data.inflationComponents?.inflationExpectations?.score ?? 0, max: 15, details: data.inflationComponents?.inflationExpectations?.details },
+  ] : [];
 
   return (
-    <div style={{ minHeight:"100vh", background:"var(--color-background-tertiary)", padding:"24px 20px", fontFamily:"var(--font-sans)" }}>
+    <div style={{ minHeight: "100vh", background: "#0A0A0F", color: "#E8E8E8", fontFamily: "'DM Sans', sans-serif", padding: "24px 20px" }}>
       <style>{`
-        @keyframes spin { to { transform:rotate(360deg); } }
-        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-        .fade-in { animation: fadeIn 0.5s ease forwards; }
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500;600&display=swap');
+        @keyframes pulse { 0%,100%{opacity:0.4;transform:scale(1)} 50%{opacity:0.8;transform:scale(1.1)} }
+        @keyframes spin { to{transform:rotate(360deg)} }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; } 
+        ::-webkit-scrollbar-track { background: #111; } 
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
       `}</style>
 
-      <div style={{ maxWidth:900, margin:"0 auto" }}>
-
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
         {/* Header */}
-        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:12, marginBottom:24 }}>
+        <div style={{ marginBottom: 32, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
           <div>
-            <div style={{ fontSize:10, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", letterSpacing:"0.18em", marginBottom:4 }}>MACRO REGIME MONITOR</div>
-            <h1 style={{ margin:0, fontSize:22, fontWeight:500, color:"var(--color-text-primary)", letterSpacing:"-0.01em" }}>Regime<span style={{ color:"var(--color-text-secondary)" }}>.</span>ai</h1>
-            <p style={{ margin:"4px 0 0", fontSize:12, color:"var(--color-text-secondary)" }}>Live economic data → regime classification</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#00D4AA", boxShadow: "0 0 8px #00D4AA" }} />
+              <span style={{ fontSize: 10, letterSpacing: "0.2em", color: "#555", textTransform: "uppercase", fontFamily: "'DM Mono', monospace" }}>Macro Regime Monitor</span>
+            </div>
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.1 }}>
+              Regime<span style={{ color: "#555" }}>.</span>ai
+            </h1>
+            <p style={{ margin: "6px 0 0", fontSize: 12, color: "#555" }}>
+              Real-time macro regime detection via live economic data
+            </p>
           </div>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
-            {data && (
-              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                <div style={{ width:6, height:6, borderRadius:"50%", background:isStale?"#BA7517":"#0F6E56" }} />
-                <span style={{ fontSize:11, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)" }}>
-                  {isStale?"Stale":"Fresh"} · {cacheAge} · shared cache
-                </span>
-              </div>
+          <button
+            onClick={fetchRegime}
+            disabled={loading}
+            style={{
+              padding: "12px 24px", background: loading ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: loading ? "#555" : "#E8E8E8",
+              cursor: loading ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 500, letterSpacing: "0.06em",
+              textTransform: "uppercase", fontFamily: "'DM Mono', monospace", display: "flex", alignItems: "center", gap: 8,
+              transition: "all 0.2s",
+            }}
+          >
+            {loading ? (
+              <>
+                <div style={{ width: 12, height: 12, border: "2px solid #444", borderTopColor: "#00D4AA", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                Analyzing...
+              </>
+            ) : (
+              <>⟳ Run Analysis</>
             )}
-            <button
-              onClick={runRefresh}
-              disabled={status==="refreshing"||status==="loading"}
-              style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 18px", background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-secondary)", borderRadius:"var(--border-radius-md)", cursor:(status==="refreshing"||status==="loading")?"not-allowed":"pointer", fontSize:11, fontFamily:"var(--font-mono)", letterSpacing:"0.08em", color:"var(--color-text-primary)", opacity:(status==="refreshing"||status==="loading")?0.5:1, transition:"all 0.2s" }}
-            >
-              {status==="refreshing"
-                ? <><div style={{ width:11, height:11, border:"1.5px solid var(--color-border-secondary)", borderTopColor:"#0F6E56", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} /> Fetching...</>
-                : <>{isStale?"⟳ Refresh data":"⟳ Force refresh"}</>
-              }
-            </button>
-            {isStale && data && status!=="refreshing" && (
-              <span style={{ fontSize:10, color:"#BA7517", fontFamily:"var(--font-mono)" }}>Data is {Math.round(hoursAgo(data.timestamp))}h old · refresh recommended</span>
-            )}
-          </div>
+          </button>
         </div>
 
-        {errorMsg && (
-          <div style={{ padding:"10px 14px", background:"var(--color-background-danger)", border:"0.5px solid var(--color-border-danger)", borderRadius:"var(--border-radius-md)", marginBottom:16, fontSize:12, color:"var(--color-text-danger)" }}>
-            {errorMsg}
+        {/* Empty State */}
+        {!data && !loading && !error && (
+          <div style={{ textAlign: "center", padding: "80px 20px", border: "1px dashed rgba(255,255,255,0.08)", borderRadius: 16 }}>
+            <div style={{ fontSize: 40, marginBottom: 16 }}>◎</div>
+            <p style={{ margin: 0, color: "#555", fontSize: 14 }}>Click <strong style={{ color: "#888" }}>Run Analysis</strong> to fetch live economic data and calculate the current macro regime</p>
+            <p style={{ margin: "8px 0 0", color: "#444", fontSize: 11, fontFamily: "'DM Mono', monospace" }}>Sources: Fed, CME, BLS, ISM, Conference Board, Atlanta Fed + more</p>
           </div>
         )}
 
-        {status==="loading" && (
-          <div style={{ textAlign:"center", padding:"60px 20px" }}>
-            <div style={{ width:24, height:24, border:"2px solid var(--color-border-tertiary)", borderTopColor:"#0F6E56", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto 12px" }} />
-            <div style={{ fontSize:13, color:"var(--color-text-secondary)" }}>Loading shared cache...</div>
+        {/* Loading */}
+        {loading && (
+          <div style={{ textAlign: "center", padding: "80px 20px", border: "1px dashed rgba(0,212,170,0.15)", borderRadius: 16, animation: "fadeIn 0.4s ease" }}>
+            <div style={{ width: 40, height: 40, border: "2px solid rgba(0,212,170,0.2)", borderTopColor: "#00D4AA", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 20px" }} />
+            <p style={{ margin: 0, color: "#666", fontSize: 13 }}>Searching live economic databases...</p>
+            <p style={{ margin: "6px 0 0", color: "#444", fontSize: 11 }}>Fetching 20+ indicators · Calculating weighted scores · Determining regime</p>
           </div>
         )}
 
-        {(status==="empty"||(status==="refreshing"&&!data)) && (
-          <div style={{ textAlign:"center", padding:"60px 20px", border:"0.5px dashed var(--color-border-secondary)", borderRadius:"var(--border-radius-lg)" }}>
-            {status==="refreshing"
-              ? <><div style={{ width:28, height:28, border:"2px solid var(--color-border-tertiary)", borderTopColor:"#0F6E56", borderRadius:"50%", animation:"spin 1s linear infinite", margin:"0 auto 16px" }} /><div style={{ fontSize:13, color:"var(--color-text-secondary)" }}>Searching live economic databases...</div><div style={{ marginTop:10, padding:"7px 14px", background:"var(--color-background-secondary)", borderRadius:"var(--border-radius-md)", display:"inline-block", fontSize:11, color:"var(--color-text-secondary)", fontFamily:"var(--font-mono)" }}>Result shared with all users for {CACHE_TTL_HOURS}h</div></>
-              : <><div style={{ fontSize:24, marginBottom:12, color:"var(--color-text-secondary)" }}>◎</div><div style={{ fontSize:13, color:"var(--color-text-secondary)" }}>No cached data. Click <strong style={{ color:"var(--color-text-primary)" }}>Refresh data</strong> to run the first analysis.</div><div style={{ fontSize:11, color:"var(--color-text-secondary)", marginTop:6, opacity:0.6 }}>Result shared with all users · {CACHE_TTL_HOURS}h TTL</div></>
-            }
+        {/* Error */}
+        {error && (
+          <div style={{ padding: 20, background: "rgba(255,71,87,0.08)", border: "1px solid rgba(255,71,87,0.2)", borderRadius: 12 }}>
+            <p style={{ margin: 0, color: "#FF4757", fontSize: 13 }}><strong>Error:</strong> {error}</p>
           </div>
         )}
 
+        {/* Results */}
         {data && (
-          <div className="fade-in">
-
-            {status==="refreshing" && (
-              <div style={{ padding:"10px 14px", background:"var(--color-background-info)", border:"0.5px solid var(--color-border-info)", borderRadius:"var(--border-radius-md)", marginBottom:16, fontSize:12, color:"var(--color-text-info)", display:"flex", alignItems:"center", gap:8 }}>
-                <div style={{ width:11, height:11, border:"1.5px solid currentColor", borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.8s linear infinite", opacity:0.6, flexShrink:0 }} />
-                Refreshing in background — current results shown below
+          <div style={{ animation: "fadeIn 0.6s ease" }}>
+            {/* Regime Banner */}
+            <div style={{
+              padding: "20px 24px", background: cfg.bg, border: `1px solid ${cfg.border}`,
+              borderRadius: 16, marginBottom: 20, display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap"
+            }}>
+              <div style={{ fontSize: 36, lineHeight: 1 }}>{cfg.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", color: `${cfg.color}99`, fontFamily: "'DM Mono', monospace", marginBottom: 2 }}>Current Regime</div>
+                <div style={{ fontSize: 22, fontWeight: 600, color: cfg.color, letterSpacing: "-0.01em" }}>{regime}</div>
+                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>{cfg.desc}</div>
               </div>
-            )}
-
-            {/* Regime banner */}
-            <div style={{ padding:"16px 20px", background:cfg.bg, border:`0.5px solid ${cfg.border}`, borderRadius:"var(--border-radius-lg)", marginBottom:16, display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
-              <div style={{ fontSize:28, lineHeight:1 }}>{cfg.icon}</div>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:9, fontFamily:"var(--font-mono)", letterSpacing:"0.14em", color:cfg.color, opacity:0.7, marginBottom:2 }}>CURRENT REGIME</div>
-                <div style={{ fontSize:20, fontWeight:500, color:cfg.color }}>{data.regime}</div>
-                <div style={{ fontSize:12, color:"var(--color-text-secondary)", marginTop:2 }}>{cfg.desc}</div>
-              </div>
-              <div style={{ borderLeft:"0.5px solid var(--color-border-tertiary)", paddingLeft:16 }}>
-                <div style={{ fontSize:9, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", letterSpacing:"0.1em", marginBottom:8 }}>FAVORED ASSETS</div>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-                  {(cfg.assets||[]).map(a=>(
-                    <span key={a} style={{ fontSize:10, padding:"3px 8px", borderRadius:"var(--border-radius-md)", border:`0.5px solid ${cfg.border}`, color:cfg.color, fontFamily:"var(--font-mono)", background:cfg.bg }}>{a}</span>
+              <div style={{ borderLeft: `1px solid ${cfg.border}`, paddingLeft: 20 }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.1em", color: "#555", textTransform: "uppercase", marginBottom: 6, fontFamily: "'DM Mono', monospace" }}>Favored Assets</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {cfg.favor.map(a => (
+                    <span key={a} style={{ fontSize: 10, padding: "3px 8px", background: `${cfg.color}15`, border: `1px solid ${cfg.color}30`, borderRadius: 4, color: cfg.color, fontFamily: "'DM Mono', monospace" }}>{a}</span>
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* Scores + quadrant */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 130px", gap:12, marginBottom:16 }}>
-              <div style={{ padding:16, background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)" }}>
-                <ScoreGauge score={Math.round(data.growthScore)} label="Growth Score" color={data.growthScore>=0?"#0F6E56":"#993C1D"} />
+            {/* Scores + Chart */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 180px", gap: 16, marginBottom: 20, alignItems: "stretch" }}>
+              <div style={{ padding: 20, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 }}>
+                <ScoreGauge score={data.growthScore} label="Growth Score" color={data.growthScore >= 0 ? "#00D4AA" : "#FF4757"} />
               </div>
-              <div style={{ padding:16, background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)" }}>
-                <ScoreGauge score={Math.round(data.inflationScore)} label="Inflation Score" color={data.inflationScore>=0?"#BA7517":"#185FA5"} />
+              <div style={{ padding: 20, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12 }}>
+                <ScoreGauge score={data.inflationScore} label="Inflation Score" color={data.inflationScore >= 0 ? "#FF6B35" : "#5B8DEF"} />
               </div>
-              <QuadrantChart growthScore={Math.round(data.growthScore)} inflationScore={Math.round(data.inflationScore)} regime={data.regime} />
+              <QuadrantChart growthScore={data.growthScore} inflationScore={data.inflationScore} regime={regime} />
             </div>
 
             {/* Summary */}
             {data.summary && (
-              <div style={{ padding:"12px 16px", background:"var(--color-background-secondary)", borderRadius:"var(--border-radius-md)", marginBottom:16, fontSize:12, color:"var(--color-text-secondary)", lineHeight:1.7 }}>
-                {data.summary}
+              <div style={{ padding: "14px 18px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, marginBottom: 20 }}>
+                <p style={{ margin: 0, fontSize: 12, color: "#888", lineHeight: 1.7 }}>{data.summary}</p>
               </div>
             )}
 
-            {/* ── TIMELINE ── */}
-            <TimelineChart
-              slots={slots}
-              history={history}
-              fetchingMonths={fetchingMonths}
-              onFetchMonth={fetchHistoryMonth}
-              selectedMonth={selectedMonth}
-              onSelectMonth={setSelectedMonth}
-            />
-
-            {/* Component breakdown */}
-            <div style={{ background:"var(--color-background-primary)", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"var(--border-radius-lg)", overflow:"hidden", marginBottom:16 }}>
-              <div style={{ display:"flex", borderBottom:"0.5px solid var(--color-border-tertiary)" }}>
-                {["growth","inflation"].map(t=>(
-                  <button key={t} onClick={()=>setTab(t)} style={{ flex:1, padding:"11px 16px", background:"transparent", border:"none", borderBottom:tab===t?`2px solid ${t==="growth"?"#0F6E56":"#BA7517"}`:"2px solid transparent", cursor:"pointer", fontSize:11, fontFamily:"var(--font-mono)", letterSpacing:"0.08em", color:tab===t?"var(--color-text-primary)":"var(--color-text-secondary)", fontWeight:tab===t?500:400, transition:"all 0.2s" }}>
-                    {t==="growth"?`Growth · ${data.growthScore>=0?"+":""}${Math.round(data.growthScore)}`:`Inflation · ${data.inflationScore>=0?"+":""}${Math.round(data.inflationScore)}`}
+            {/* Component Breakdown */}
+            <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, overflow: "hidden", marginBottom: 20 }}>
+              <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                {["growth", "inflation"].map(t => (
+                  <button key={t} onClick={() => setTab(t)} style={{
+                    flex: 1, padding: "14px 20px", background: tab === t ? "rgba(255,255,255,0.04)" : "transparent",
+                    border: "none", cursor: "pointer", fontSize: 11, fontWeight: tab === t ? 600 : 400,
+                    color: tab === t ? "#E8E8E8" : "#555", letterSpacing: "0.1em", textTransform: "uppercase",
+                    fontFamily: "'DM Mono', monospace", borderBottom: tab === t ? `2px solid ${t === "growth" ? "#00D4AA" : "#FF6B35"}` : "2px solid transparent",
+                    transition: "all 0.2s",
+                  }}>
+                    {t === "growth" ? `Growth Score: ${data.growthScore >= 0 ? "+" : ""}${data.growthScore}` : `Inflation Score: ${data.inflationScore >= 0 ? "+" : ""}${data.inflationScore}`}
                   </button>
                 ))}
               </div>
-              <div style={{ padding:"16px 20px" }}>
-                {activeComps.map(c => {
-                  const comp=(activeSource||{})[c.key]||{};
-                  return <ComponentRow key={c.label} label={c.label} score={Math.round(comp.score||0)} maxAbs={c.max} color={activeColor} details={comp.details} />;
-                })}
+              <div style={{ padding: "20px 24px" }}>
+                {(tab === "growth" ? growthComponents : inflationComponents).map(c => (
+                  <ComponentBar key={c.label} label={c.label} score={c.score} maxAbs={c.max} color={tab === "growth" ? "#00D4AA" : "#FF6B35"} details={c.details} />
+                ))}
               </div>
             </div>
 
-            {/* Data snapshot */}
-            {(data.keyDataPoints||[]).length>0 && (
-              <div style={{ background:"var(--color-background-secondary)", borderRadius:"var(--border-radius-lg)", padding:"14px 18px", marginBottom:16 }}>
-                <div style={{ fontSize:10, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", letterSpacing:"0.14em", marginBottom:12 }}>LIVE DATA SNAPSHOT</div>
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))", gap:8 }}>
-                  {data.keyDataPoints.map((dp,i)=>(
-                    <div key={i} style={{ padding:"10px 12px", background:"var(--color-background-primary)", borderRadius:"var(--border-radius-md)", border:"0.5px solid var(--color-border-tertiary)" }}>
-                      <div style={{ fontSize:9, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:3 }}>{dp.label}</div>
-                      <div style={{ fontSize:14, fontWeight:500, fontFamily:"var(--font-mono)", color:"var(--color-text-primary)" }}>{dp.value}</div>
-                      <div style={{ fontSize:9, color:"var(--color-text-secondary)", marginTop:2, opacity:0.7 }}>{dp.source}</div>
+            {/* Key Data Points */}
+            {data.keyDataPoints?.length > 0 && (
+              <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: "16px 20px" }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.15em", color: "#555", textTransform: "uppercase", marginBottom: 14, fontFamily: "'DM Mono', monospace" }}>Live Data Snapshot</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+                  {data.keyDataPoints.map((dp, i) => (
+                    <div key={i} style={{ padding: "10px 12px", background: "rgba(255,255,255,0.02)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)" }}>
+                      <div style={{ fontSize: 9, color: "#555", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 4 }}>{dp.label}</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#E8E8E8", fontFamily: "'DM Mono', monospace" }}>{dp.value}</div>
+                      <div style={{ fontSize: 9, color: "#444", marginTop: 2 }}>{dp.source}</div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
-              <span style={{ fontSize:10, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", opacity:0.4 }}>Shared cache · stale after {CACHE_TTL_HOURS}h · history stored per month</span>
-              <span style={{ fontSize:10, fontFamily:"var(--font-mono)", color:"var(--color-text-secondary)", opacity:0.4 }}>Updated: {new Date(data.timestamp).toLocaleString()}</span>
+            {/* Timestamp */}
+            <div style={{ textAlign: "right", marginTop: 16, fontSize: 10, color: "#444", fontFamily: "'DM Mono', monospace" }}>
+              Last updated: {data.timestamp ? new Date(data.timestamp).toLocaleString() : new Date().toLocaleString()}
             </div>
-
           </div>
         )}
       </div>
