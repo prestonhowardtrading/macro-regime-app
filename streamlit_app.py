@@ -53,44 +53,44 @@ col3.metric("Liquidity Score", liquidity_score)
 # -----------------------------
 
 st.subheader("Current Macro Regime")
-
 st.success(regime)
 
 # -----------------------------
 # REGIME QUADRANT MAP
 # -----------------------------
 
-import matplotlib.pyplot as plt
-
 st.subheader("Macro Regime Quadrant")
 
-fig, ax = plt.subplots()
+# Create dataframe for point
+data = pd.DataFrame({
+    "Growth":[growth_score],
+    "Inflation":[inflation_score]
+})
 
-# Draw quadrant lines
-ax.axhline(0)
-ax.axvline(0)
+# Display quadrant labels
+col1, col2 = st.columns(2)
 
-# Plot current regime point
-ax.scatter(growth_score, inflation_score, s=200)
+with col1:
+    st.markdown("### Risk-Off Inflation")
+    st.caption("Stagflation")
 
-# Axis labels
-ax.set_xlabel("Growth Score")
-ax.set_ylabel("Inflation Score")
+    st.markdown("### Risk-Off Disinflation")
+    st.caption("Deflation Bust")
 
-# Set axis range
-ax.set_xlim(-100, 100)
-ax.set_ylim(-100, 100)
+with col2:
+    st.markdown("### Risk-On Inflation")
+    st.caption("Reflation")
 
-# Label quadrants
-ax.text(50, 50, "Reflation\n(Risk-On Inflation)", ha='center')
-ax.text(-50, 50, "Stagflation\n(Risk-Off Inflation)", ha='center')
-ax.text(50, -50, "Goldilocks\n(Risk-On Disinflation)", ha='center')
-ax.text(-50, -50, "Deflation\nBust", ha='center')
+    st.markdown("### Risk-On Disinflation")
+    st.caption("Goldilocks")
 
-st.pyplot(fig)
+# Plot position
+st.write("Current Regime Position")
+
+st.scatter_chart(data, x="Growth", y="Inflation")
 
 # -----------------------------
-# SCORE BREAKDOWN (placeholder)
+# SCORE BREAKDOWN
 # -----------------------------
 
 st.subheader("Score Components")
