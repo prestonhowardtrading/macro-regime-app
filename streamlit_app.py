@@ -4,7 +4,7 @@ const SYSTEM_PROMPT = `You are a macroeconomic analyst. Your job is to research 
 
 You have access to web search. Use it to find the LATEST available data for each indicator. Search for real, current values.
 
-GROWTH SCORE FRAMEWORK (capped at ±100):
+# GROWTH SCORE FRAMEWORK (capped at +/-100):
 
 MONETARY POLICY (25% weight, max ±55 raw points):
 - Rate cut probability next 3 months (from CME FedWatch): >70% = +20, 40-70% = +10, neutral = 0, hike 40-70% = -10, hike >70% = -20
