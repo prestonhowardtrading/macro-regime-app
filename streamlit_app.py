@@ -357,73 +357,20 @@ st.markdown(
 st.markdown("<div style='margin-bottom:24px;'></div>", unsafe_allow_html=True)
 
 # ================================================
-# REGIME BANNER
+# TOP SECTION: Quadrant (left) + Regime info (right)
 # ================================================
 
-favor_tags = ""
-for asset in cfg["favor"]:
-    favor_tags += (
-        '<span class="asset-tag" style="background:' + cfg["color"] + '22;'
-        'border:1px solid ' + cfg["color"] + '44;color:' + cfg["color"] + ';">'
-        + asset + '</span>'
-    )
+col_q, col_r = st.columns([1, 2])
 
-st.markdown(
-    '<div class="regime-banner" style="background:' + cfg["bg"] + ';border:1px solid ' + cfg["border"] + ';">'
-    '<div class="regime-icon">' + cfg["icon"] + '</div>'
-    '<div style="flex:1;">'
-    '<div class="regime-label" style="color:' + cfg["color"] + '99;">Current Regime</div>'
-    '<div class="regime-name" style="color:' + cfg["color"] + ';">' + regime + '</div>'
-    '<div class="regime-desc">' + cfg["desc"] + '</div>'
-    '</div>'
-    '<div class="regime-assets">'
-    '<div class="assets-label">Favored Assets</div>'
-    + favor_tags +
-    '</div>'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-# ================================================
-# SCORES + QUADRANT  (3-column like JS)
-# ================================================
-
-col_g, col_i, col_q = st.columns([1, 1, 1])
-
-growth_color    = "#00D4AA" if growth_score    >= 0 else "#FF4757"
-inflation_color = "#FF6B35" if inflation_score >= 0 else "#5B8DEF"
-
-with col_g:
-    st.markdown(
-        '<div class="card">'
-        '<div class="card-label">Growth Score</div>'
-        '<div class="gauge-score" style="color:' + growth_color + ';">' + fmt_score(growth_score) + '</div>'
-        + gauge_bar(growth_score, growth_color) +
-        '<div class="gauge-foot"><span>-100 RISK-OFF</span><span>RISK-ON +100</span></div>'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-with col_i:
-    st.markdown(
-        '<div class="card">'
-        '<div class="card-label">Inflation Score</div>'
-        '<div class="gauge-score" style="color:' + inflation_color + ';">' + fmt_score(inflation_score) + '</div>'
-        + gauge_bar(inflation_score, inflation_color) +
-        '<div class="gauge-foot"><span>-100 DEFLATION</span><span>INFLATION +100</span></div>'
-        '</div>',
-        unsafe_allow_html=True
-    )
+# Pre-compute quadrant dot positions
+qx        = round(50 + (growth_score   / 100) * 45, 2)
+qy        = round(50 - (inflation_score / 100) * 45, 2)
+dot_left  = str(round(qx - 7,  2)) + "%"
+dot_top   = str(round(qy - 7,  2)) + "%"
+ring_left = str(round(qx - 14, 2)) + "%"
+ring_top  = str(round(qy - 14, 2)) + "%"
 
 with col_q:
-    # Quadrant dot: x = growth axis, y = inflation axis (inverted)
-    qx = round(50 + (growth_score  / 100) * 45, 2)
-    qy = round(50 - (inflation_score / 100) * 45, 2)
-    dot_left = str(round(qx - 7, 2)) + "%"
-    dot_top  = str(round(qy - 7, 2)) + "%"
-    ring_left = str(round(qx - 14, 2)) + "%"
-    ring_top  = str(round(qy - 14, 2)) + "%"
-
     st.markdown(
         '<div class="quad-wrap">'
         '<div class="quad-inner">'
@@ -438,59 +385,43 @@ with col_q:
         '<div class="quad-lbl" style="right:4px;top:50%;transform:translateY(-50%) rotate(90deg);color:#00D4AA;transform-origin:center;">RISK-ON</div>'
         '<div class="quad-lbl" style="left:4px;top:50%;transform:translateY(-50%) rotate(-90deg);color:#FF6B35;transform-origin:center;">RISK-OFF</div>'
         '<div class="quad-dot" style="left:' + dot_left + ';top:' + dot_top + ';background:' + cfg["color"] + ';box-shadow:0 0 16px ' + cfg["color"] + '80;"></div>'
-        '<div class="quad-ring" style="left:' + ring_left + ';top:' + ring_top + ';border:1px solid ' + cfg["color"] + '40;animation:pulse 2s infinite;"></div>'
+        '<div class="quad-ring" style="left:' + ring_left + ';top:' + ring_top + ';border:1px solid ' + cfg["color"] + '40;"></div>'
         '</div>'
         '</div>',
         unsafe_allow_html=True
     )
 
-# ================================================
-# AI MACRO ANALYSIS  (auto-runs, cached)
-# ================================================
-
-st.markdown('<div class="sec-label">AI Macro Analysis</div>', unsafe_allow_html=True)
-
-if "ai_analysis" not in st.session_state:
-    with st.spinner("Analyzing macro regime..."):
-        try:
-            st.session_state.ai_analysis = get_ai_analysis(
-                growth_score, inflation_score, liquidity_score, risk_appetite, regime
-            )
-        except Exception as e:
-            st.session_state.ai_analysis = None
-            st.error("AI analysis unavailable: " + str(e))
-
-if st.session_state.ai_analysis:
-    a  = st.session_state.ai_analysis
-    gi = a.get("growth_interpretation", "")
-    ii = a.get("inflation_interpretation", "")
-    li = a.get("liquidity_interpretation", "")
-    ri = a.get("risk_appetite_interpretation", "")
-    sm = a.get("regime_summary", "")
-    kw = a.get("key_watch", "")
-
-    # Summary first (like JS summary box)
-    st.markdown(
-        '<div class="summary-box">' + sm + '</div>',
-        unsafe_allow_html=True
+# Build favored asset tags
+favor_tags = ""
+for asset in cfg["favor"]:
+    favor_tags += (
+        '<span class="asset-tag" style="background:' + cfg["color"] + '22;'
+        'border:1px solid ' + cfg["color"] + '44;color:' + cfg["color"] + ';">'
+        + asset + '</span>'
     )
 
-    # 2x2 signal cards
+with col_r:
     st.markdown(
-        '<div class="ai-grid">'
-        '<div class="ai-card"><div class="ai-card-lbl" style="color:#00D4AA;">Growth Signal</div><div class="ai-card-txt">' + gi + '</div></div>'
-        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Inflation Signal</div><div class="ai-card-txt">' + ii + '</div></div>'
-        '<div class="ai-card"><div class="ai-card-lbl" style="color:#5B8DEF;">Liquidity Signal</div><div class="ai-card-txt">' + li + '</div></div>'
-        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Risk Appetite Signal</div><div class="ai-card-txt">' + ri + '</div></div>'
-        '</div>',
-        unsafe_allow_html=True
-    )
+        '<div style="padding:24px;border-radius:16px;background:' + cfg["bg"] + ';border:1px solid ' + cfg["border"] + ';height:100%;box-sizing:border-box;">'
 
-    # Key watch
-    st.markdown(
-        '<div class="watch-box">'
-        '<span style="color:#00D4AA;font-size:14px;">◎</span>'
-        '<div class="watch-txt"><span style="color:#00D4AA;font-family:\'DM Mono\',monospace;font-size:10px;letter-spacing:0.1em;">KEY WATCH &nbsp;</span>' + kw + '</div>'
+        # Eyebrow
+        '<div style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;font-family:\'DM Mono\',monospace;color:' + cfg["color"] + '99;margin-bottom:6px;">Current Regime</div>'
+
+        # Big regime name
+        '<div style="font-size:32px;font-weight:600;letter-spacing:-0.02em;color:' + cfg["color"] + ';line-height:1.1;margin-bottom:6px;">'
+        + cfg["icon"] + ' ' + regime +
+        '</div>'
+
+        # Description
+        '<div style="font-size:13px;color:#777;margin-bottom:24px;">' + cfg["desc"] + '</div>'
+
+        # Divider
+        '<div style="height:1px;background:rgba(255,255,255,0.06);margin-bottom:20px;"></div>'
+
+        # Favored assets
+        '<div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;font-family:\'DM Mono\',monospace;color:#555;margin-bottom:10px;">Favored Assets</div>'
+        '<div>' + favor_tags + '</div>'
+
         '</div>',
         unsafe_allow_html=True
     )
@@ -538,6 +469,57 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True
 )
+
+# ================================================
+# AI MACRO ANALYSIS  (auto-runs, cached)
+# ================================================
+
+st.markdown('<div class="sec-label">AI Macro Analysis</div>', unsafe_allow_html=True)
+
+if "ai_analysis" not in st.session_state:
+    with st.spinner("Analyzing macro regime..."):
+        try:
+            st.session_state.ai_analysis = get_ai_analysis(
+                growth_score, inflation_score, liquidity_score, risk_appetite, regime
+            )
+        except Exception as e:
+            st.session_state.ai_analysis = None
+            st.error("AI analysis unavailable: " + str(e))
+
+if st.session_state.ai_analysis:
+    a  = st.session_state.ai_analysis
+    gi = a.get("growth_interpretation", "")
+    ii = a.get("inflation_interpretation", "")
+    li = a.get("liquidity_interpretation", "")
+    ri = a.get("risk_appetite_interpretation", "")
+    sm = a.get("regime_summary", "")
+    kw = a.get("key_watch", "")
+
+    # Summary box
+    st.markdown(
+        '<div class="summary-box">' + sm + '</div>',
+        unsafe_allow_html=True
+    )
+
+    # 2x2 signal cards
+    st.markdown(
+        '<div class="ai-grid">'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#00D4AA;">Growth Signal</div><div class="ai-card-txt">' + gi + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Inflation Signal</div><div class="ai-card-txt">' + ii + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#5B8DEF;">Liquidity Signal</div><div class="ai-card-txt">' + li + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Risk Appetite Signal</div><div class="ai-card-txt">' + ri + '</div></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    # Key watch
+    st.markdown(
+        '<div class="watch-box">'
+        '<span style="color:#00D4AA;font-size:14px;">◎</span>'
+        '<div class="watch-txt"><span style="color:#00D4AA;font-family:\'DM Mono\',monospace;font-size:10px;letter-spacing:0.1em;">KEY WATCH &nbsp;</span>' + kw + '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
 # ================================================
 # HISTORICAL REGIME TIMELINE
