@@ -2,13 +2,13 @@ import streamlit as st
 import anthropic
 import json
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="Regime.ai")
 
 # ------------------------------------------------
 # SAMPLE DATA
 # ------------------------------------------------
 
-growth_score = 35
+growth_score    = 35
 inflation_score = -10
 liquidity_score = 50
 
@@ -17,7 +17,7 @@ risk_appetite = (
     0.3 * growth_score +
     0.2 * inflation_score
 )
-risk_appetite = max(min(risk_appetite, 100), -100)
+risk_appetite         = max(min(risk_appetite, 100), -100)
 risk_appetite_rounded = round(risk_appetite, 1)
 
 # ------------------------------------------------
@@ -34,31 +34,68 @@ else:
     regime = "Risk-Off Disinflation"
 
 # ------------------------------------------------
-# DOT POSITION
+# REGIME CONFIG  (mirrors JS REGIME_CONFIG)
 # ------------------------------------------------
 
-x_percent = round((risk_appetite + 100) / 200 * 100, 2)
-y_percent = round((100 - inflation_score) / 200 * 100, 2)
+REGIME_CONFIG = {
+    "Risk-On Inflation": {
+        "color":  "#FF6B35",
+        "bg":     "rgba(255,107,53,0.12)",
+        "border": "rgba(255,107,53,0.4)",
+        "icon":   "↗",
+        "desc":   "Growth accelerating + Prices rising",
+        "favor":  ["Commodities", "Energy", "Financials", "TIPS", "EM equities"],
+    },
+    "Risk-On Disinflation": {
+        "color":  "#00D4AA",
+        "bg":     "rgba(0,212,170,0.12)",
+        "border": "rgba(0,212,170,0.4)",
+        "icon":   "↗",
+        "desc":   "Growth accelerating + Prices cooling",
+        "favor":  ["Growth equities", "Tech", "Small caps", "Corp bonds", "Crypto"],
+    },
+    "Risk-Off Inflation": {
+        "color":  "#FF4757",
+        "bg":     "rgba(255,71,87,0.12)",
+        "border": "rgba(255,71,87,0.4)",
+        "icon":   "↘",
+        "desc":   "Growth slowing + Prices rising",
+        "favor":  ["Gold", "Commodities", "Short-dur bonds", "Cash", "Defensives"],
+    },
+    "Risk-Off Disinflation": {
+        "color":  "#5B8DEF",
+        "bg":     "rgba(91,141,239,0.12)",
+        "border": "rgba(91,141,239,0.4)",
+        "icon":   "↘",
+        "desc":   "Growth slowing + Prices cooling",
+        "favor":  ["Long-duration Treasuries", "Gold", "Cash", "Utilities", "REITs"],
+    },
+}
+
+cfg = REGIME_CONFIG.get(regime, REGIME_CONFIG["Risk-On Disinflation"])
 
 # ------------------------------------------------
 # HISTORICAL REGIME DATA (last 6 months)
 # ------------------------------------------------
 
 historical_data = [
-    {"month": "October 2024",  "regime": "Risk-On Inflation",     "liquidity": 45,  "growth": 40,  "inflation": 30,  "risk_appetite": 46.5,  "regime_color": "#ef4444", "regime_icon": "🔥"},
-    {"month": "November 2024", "regime": "Risk-On Inflation",     "liquidity": 55,  "growth": 42,  "inflation": 20,  "risk_appetite": 52.1,  "regime_color": "#ef4444", "regime_icon": "🔥"},
-    {"month": "December 2024", "regime": "Risk-Off Inflation",    "liquidity": -20, "growth": 10,  "inflation": 25,  "risk_appetite": -4.0,  "regime_color": "#f97316", "regime_icon": "⚠️"},
-    {"month": "January 2025",  "regime": "Risk-Off Disinflation", "liquidity": -35, "growth": -15, "inflation": -18, "risk_appetite": -26.1, "regime_color": "#3b82f6", "regime_icon": "🧊"},
-    {"month": "February 2025", "regime": "Risk-On Disinflation",  "liquidity": 30,  "growth": 20,  "inflation": -5,  "risk_appetite": 21.0,  "regime_color": "#22c55e", "regime_icon": "📈"},
-    {"month": "March 2025",    "regime": "Risk-On Disinflation",  "liquidity": 50,  "growth": 35,  "inflation": -10, "risk_appetite": risk_appetite_rounded, "regime_color": "#22c55e", "regime_icon": "📈"},
+    {"month": "October 2024",  "regime": "Risk-On Inflation",     "liquidity": 45,  "growth": 40,  "inflation": 30,  "risk_appetite": 46.5,  "color": "#FF6B35"},
+    {"month": "November 2024", "regime": "Risk-On Inflation",     "liquidity": 55,  "growth": 42,  "inflation": 20,  "risk_appetite": 52.1,  "color": "#FF6B35"},
+    {"month": "December 2024", "regime": "Risk-Off Inflation",    "liquidity": -20, "growth": 10,  "inflation": 25,  "risk_appetite": -4.0,  "color": "#FF4757"},
+    {"month": "January 2025",  "regime": "Risk-Off Disinflation", "liquidity": -35, "growth": -15, "inflation": -18, "risk_appetite": -26.1, "color": "#5B8DEF"},
+    {"month": "February 2025", "regime": "Risk-On Disinflation",  "liquidity": 30,  "growth": 20,  "inflation": -5,  "risk_appetite": 21.0,  "color": "#00D4AA"},
+    {"month": "March 2025",    "regime": "Risk-On Disinflation",  "liquidity": 50,  "growth": 35,  "inflation": -10, "risk_appetite": risk_appetite_rounded, "color": "#00D4AA"},
 ]
 
 # ------------------------------------------------
 # HELPER FUNCTIONS
 # ------------------------------------------------
 
-def bar_width(score):
-    return round(max(0, min(100, (score + 100) / 2)), 1)
+def fmt_score(val):
+    sign = "+" if val > 0 else ""
+    if isinstance(val, float) and val == int(val):
+        return sign + str(int(val))
+    return sign + str(val)
 
 def signal_text(score, label):
     if label == "Growth":
@@ -71,55 +108,61 @@ def signal_text(score, label):
         return "Risk-On" if score > 20 else ("Risk-Off" if score < -20 else "Neutral")
     return ""
 
-def fmt_score(val):
-    sign = "+" if val > 0 else ""
-    if val == int(val):
-        return sign + str(int(val))
-    return sign + str(val)
+def gauge_bar(score, color):
+    """Renders the JS-style centered gauge bar: zero in middle, fills left or right."""
+    pct     = abs(score) / 2          # half of abs value (bar is 0-50% from center)
+    left    = "50%" if score >= 0 else str(round(50 - pct, 1)) + "%"
+    width   = str(round(pct, 1)) + "%"
+    return (
+        '<div class="gauge-track">'
+        '<div class="gauge-mid"></div>'
+        '<div class="gauge-fill" style="left:' + left + ';width:' + width + ';background:' + color + ';"></div>'
+        '</div>'
+    )
 
 def score_pill(val):
-    css = "positive" if val > 0 else ("negative" if val < 0 else "neutral")
+    css = "pill-pos" if val > 0 else ("pill-neg" if val < 0 else "pill-neu")
     return '<span class="score-pill ' + css + '">' + fmt_score(val) + '</span>'
 
-def regime_badge(row):
-    c = row["regime_color"]
+def regime_badge_html(row):
+    c  = row["color"]
     bg = c + "22"
     return (
         '<span class="regime-badge" style="background:' + bg +
         ';border:1px solid ' + c + ';color:' + c + ';">' +
-        row["regime_icon"] + ' ' + row["regime"] + '</span>'
+        row["regime"] + '</span>'
     )
 
 # ------------------------------------------------
-# AI ANALYSIS FUNCTION
+# AI ANALYSIS
 # ------------------------------------------------
 
 def get_ai_analysis(growth, inflation, liquidity, risk_app, regime_name):
     client = anthropic.Anthropic()
     prompt = (
-        "You are a macro economist and financial analyst. Analyze the following macro regime scores and provide a concise, insightful interpretation.\n\n"
-        "Current Macro Scores:\n"
-        "- Growth Score: " + str(growth) + " (range: -100 to 100, positive = expanding, negative = contracting)\n"
-        "- Inflation Score: " + str(inflation) + " (range: -100 to 100, positive = inflationary, negative = deflationary)\n"
-        "- Liquidity Score: " + str(liquidity) + " (range: -100 to 100, positive = abundant liquidity, negative = tight liquidity)\n"
-        "- Risk Appetite Score: " + str(round(risk_app, 1)) + " (composite score)\n"
-        "- Current Regime: " + regime_name + "\n\n"
-        "Provide your analysis in the following JSON format ONLY (no markdown, no extra text):\n"
+        "You are a macro economist and financial analyst. Analyze the following macro regime scores.\n\n"
+        "Scores:\n"
+        "- Growth Score: "       + str(growth)            + " (-100 to 100)\n"
+        "- Inflation Score: "    + str(inflation)          + " (-100 to 100)\n"
+        "- Liquidity Score: "    + str(liquidity)          + " (-100 to 100)\n"
+        "- Risk Appetite Score: "+ str(round(risk_app, 1)) + "\n"
+        "- Current Regime: "     + regime_name             + "\n\n"
+        "Return ONLY valid JSON, no markdown:\n"
         "{\n"
-        '  "growth_interpretation": "2-sentence interpretation of the growth score and what it signals",\n'
-        '  "inflation_interpretation": "2-sentence interpretation of the inflation score and what it signals",\n'
-        '  "liquidity_interpretation": "2-sentence interpretation of the liquidity score and what it signals",\n'
-        '  "risk_appetite_interpretation": "2-sentence interpretation of the risk appetite score",\n'
-        '  "regime_summary": "3-4 sentence overall regime summary covering what this macro environment means for investors and key risks/opportunities",\n'
-        '  "key_watch": "One specific macro indicator or event to watch closely in this regime"\n'
+        '  "growth_interpretation": "2-sentence interpretation",\n'
+        '  "inflation_interpretation": "2-sentence interpretation",\n'
+        '  "liquidity_interpretation": "2-sentence interpretation",\n'
+        '  "risk_appetite_interpretation": "2-sentence interpretation",\n'
+        '  "regime_summary": "3-4 sentence macro summary for investors",\n'
+        '  "key_watch": "One specific indicator to watch"\n'
         "}"
     )
-    message = client.messages.create(
+    msg = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
-    raw = message.content[0].text.strip()
+    raw = msg.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -127,205 +170,288 @@ def get_ai_analysis(growth, inflation, liquidity, risk_app, regime_name):
     return json.loads(raw.strip())
 
 # ------------------------------------------------
-# GLOBAL CSS
+# CSS  —  matches JS aesthetic exactly
 # ------------------------------------------------
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Syne:wght@700;800&display=swap');
-* { font-family: 'IBM Plex Mono', monospace; }
-body { background: #0b1220; color: white; }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500;600&display=swap');
 
-.header { display:flex; align-items:center; gap:15px; margin-bottom:30px; }
-.pulse { width:18px; height:18px; border-radius:50%; background:#00e0ff; position:relative; }
-.pulse::after { content:''; position:absolute; width:18px; height:18px; border-radius:50%; background:#00e0ff; animation:pulse 2s infinite; }
-@keyframes pulse { 0%{transform:scale(1);opacity:1;} 70%{transform:scale(2.2);opacity:0;} 100%{opacity:0;} }
-.header-title { font-family:'Syne',sans-serif; font-size:22px; font-weight:800; letter-spacing:2px; }
+html, body, [class*="st-"], [data-testid] {
+    font-family: 'DM Sans', sans-serif !important;
+    background-color: #0A0A0F;
+    color: #E8E8E8;
+}
 
-.panel { background:#111827; border-radius:14px; padding:25px; border:1px solid #1f2937; }
-.panel-title { color:#9ca3af; font-size:11px; letter-spacing:3px; margin-bottom:20px; }
+[data-testid="stAppViewContainer"] { background: #0A0A0F; }
+[data-testid="stHeader"]           { background: #0A0A0F; }
+[data-testid="stSidebar"]          { background: #0A0A0F; }
+section[data-testid="stMain"]      { background: #0A0A0F; }
 
-.quadrant-wrapper { position:relative; width:100%; padding-bottom:100%; }
-.quadrant-inner { position:absolute; top:0; left:0; right:0; bottom:0; }
-.grid { display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; width:100%; height:100%; }
-.box { border:1px solid #1f2937; background:#0f172a; }
-.axis-x { position:absolute; top:50%; width:100%; height:1px; background:#374151; }
-.dot { position:absolute; width:16px; height:16px; background:white; border-radius:50%; box-shadow:0 0 15px rgba(255,255,255,.7); }
-.q-label { position:absolute; font-size:11px; color:#9ca3af; letter-spacing:1px; }
-.q1 { top:10%; left:55%; }
-.q2 { top:10%; left:5%; }
-.q3 { top:75%; left:5%; }
-.q4 { top:75%; left:55%; }
+/* ── HEADER ── */
+.hdr-wrap    { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:28px; }
+.hdr-dot     { width:6px; height:6px; border-radius:50%; background:#00D4AA; box-shadow:0 0 8px #00D4AA; display:inline-block; margin-right:8px; vertical-align:middle; }
+.hdr-eyebrow { font-size:10px; letter-spacing:0.2em; color:#555; text-transform:uppercase; font-family:'DM Mono',monospace; margin-bottom:4px; }
+.hdr-title   { margin:0; font-size:28px; font-weight:600; letter-spacing:-0.02em; line-height:1.1; color:#E8E8E8; }
+.hdr-sub     { margin:6px 0 0; font-size:12px; color:#555; }
 
-.regime-box { background:#2a1b0d; border:1px solid #f59e0b; padding:15px; border-radius:10px; color:#f59e0b; font-weight:600; margin-bottom:15px; }
-.metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-.metric { background:#1f2937; padding:15px; border-radius:10px; text-align:center; }
-.asset-box { background:#2a1b0d; border:1px solid #f59e0b; padding:20px; border-radius:10px; }
-.tag { display:inline-block; background:#111827; border:1px solid #374151; padding:6px 12px; border-radius:20px; margin:5px; font-size:13px; }
+/* ── REGIME BANNER ── */
+.regime-banner {
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+    padding:20px 24px; border-radius:16px; margin-bottom:20px;
+}
+.regime-icon   { font-size:36px; line-height:1; }
+.regime-label  { font-size:10px; letter-spacing:0.15em; text-transform:uppercase; font-family:'DM Mono',monospace; margin-bottom:2px; }
+.regime-name   { font-size:22px; font-weight:600; letter-spacing:-0.01em; }
+.regime-desc   { font-size:12px; color:#777; margin-top:2px; }
+.regime-assets { border-left:1px solid rgba(255,255,255,0.08); padding-left:20px; }
+.assets-label  { font-size:10px; letter-spacing:0.1em; color:#555; text-transform:uppercase; margin-bottom:6px; font-family:'DM Mono',monospace; }
+.asset-tag     { display:inline-block; font-size:10px; padding:3px 8px; border-radius:4px; margin:2px; font-family:'DM Mono',monospace; }
 
-.section-header { color:#9ca3af; font-size:11px; letter-spacing:3px; margin-bottom:20px; padding-bottom:10px; border-bottom:1px solid #1f2937; margin-top:40px; }
+/* ── CARDS ── */
+.card {
+    padding:20px; border-radius:12px;
+    background:rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.06);
+}
+.card-label {
+    font-size:11px; letter-spacing:0.12em; text-transform:uppercase;
+    color:#888; font-family:'DM Mono',monospace; margin-bottom:10px;
+}
 
-.scores-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:30px; }
-.score-card { background:#111827; border:1px solid #1f2937; border-radius:12px; padding:20px 16px; position:relative; overflow:hidden; }
-.score-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
-.score-card.growth::before  { background:#22c55e; }
-.score-card.inflation::before { background:#ef4444; }
-.score-card.liquidity::before { background:#3b82f6; }
-.score-card.risk::before    { background:#f59e0b; }
-.score-label { color:#6b7280; font-size:10px; letter-spacing:2px; margin-bottom:10px; }
-.score-value { font-family:'Syne',sans-serif; font-size:36px; font-weight:800; line-height:1; margin-bottom:12px; }
-.score-card.growth   .score-value { color:#22c55e; }
-.score-card.inflation .score-value { color:#ef4444; }
-.score-card.liquidity .score-value { color:#3b82f6; }
-.score-card.risk     .score-value { color:#f59e0b; }
-.score-bar-track { height:4px; background:#1f2937; border-radius:2px; overflow:hidden; margin-bottom:8px; }
-.score-bar-fill { height:100%; border-radius:2px; }
-.score-card.growth   .score-bar-fill { background:#22c55e; }
-.score-card.inflation .score-bar-fill { background:#ef4444; }
-.score-card.liquidity .score-bar-fill { background:#3b82f6; }
-.score-card.risk     .score-bar-fill { background:#f59e0b; }
-.score-signal { font-size:10px; color:#6b7280; }
+/* ── GAUGE ── */
+.gauge-score {
+    font-size:28px; font-weight:700; font-family:'DM Mono',monospace;
+    line-height:1; margin-bottom:10px;
+}
+.gauge-track {
+    height:6px; background:rgba(255,255,255,0.06);
+    border-radius:3px; overflow:hidden; position:relative; margin-bottom:6px;
+}
+.gauge-mid {
+    position:absolute; left:50%; top:0; width:1px; height:100%;
+    background:rgba(255,255,255,0.2); z-index:2;
+}
+.gauge-fill {
+    position:absolute; height:100%; border-radius:3px;
+}
+.gauge-foot {
+    display:flex; justify-content:space-between;
+}
+.gauge-foot span {
+    font-size:9px; color:#555; font-family:'DM Mono',monospace;
+}
 
-.ai-analysis-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-bottom:20px; }
-.ai-card { background:#0f172a; border:1px solid #1f2937; border-radius:12px; padding:18px; }
-.ai-card-label { font-size:10px; letter-spacing:2px; margin-bottom:8px; }
-.ai-card.growth-ai   .ai-card-label { color:#22c55e; }
-.ai-card.inflation-ai .ai-card-label { color:#ef4444; }
-.ai-card.liquidity-ai .ai-card-label { color:#3b82f6; }
-.ai-card.risk-ai     .ai-card-label { color:#f59e0b; }
-.ai-card-text { color:#d1d5db; font-size:12px; line-height:1.6; }
-.regime-summary-box { background:#0f172a; border:1px solid #374151; border-radius:12px; padding:24px; margin-bottom:16px; }
-.regime-summary-text { color:#e5e7eb; font-size:13px; line-height:1.8; margin-bottom:16px; }
-.watch-box { background:#1c1f2e; border:1px solid rgba(245,158,11,0.27); border-radius:8px; padding:12px 16px; display:flex; align-items:flex-start; gap:10px; }
-.watch-icon { color:#f59e0b; font-size:14px; }
-.watch-text { color:#fcd34d; font-size:12px; line-height:1.5; }
+/* ── QUADRANT ── */
+.quad-wrap {
+    position:relative; width:100%; padding-bottom:100%;
+    background:rgba(255,255,255,0.02); border-radius:12px;
+    border:1px solid rgba(255,255,255,0.06); overflow:hidden;
+}
+.quad-inner   { position:absolute; inset:0; }
+.quad-q       { position:absolute; }
+.quad-axis-v  { position:absolute; left:50%; top:0; bottom:0; width:1px; background:rgba(255,255,255,0.08); }
+.quad-axis-h  { position:absolute; top:50%; left:0; right:0; height:1px; background:rgba(255,255,255,0.08); }
+.quad-lbl     { position:absolute; font-size:8px; letter-spacing:0.1em; font-family:'DM Mono',monospace; }
+.quad-dot     { position:absolute; width:14px; height:14px; border-radius:50%; z-index:10; }
+.quad-ring    { position:absolute; width:28px; height:28px; border-radius:50%; z-index:9; }
 
-.history-table { width:100%; border-collapse:separate; border-spacing:0 6px; }
-.history-table th { color:#6b7280; font-size:10px; letter-spacing:2px; padding:0 16px 12px 16px; text-align:left; border-bottom:1px solid #1f2937; }
-.history-row td { padding:14px 16px; font-size:12px; color:#d1d5db; border-top:1px solid #1f2937; border-bottom:1px solid #1f2937; background:#0f172a; }
-.history-row td:first-child { border-left:1px solid #1f2937; border-radius:8px 0 0 8px; }
-.history-row td:last-child  { border-right:1px solid #1f2937; border-radius:0 8px 8px 0; }
-.current-row td { background:#141d2e !important; border-color:#374151 !important; }
-.current-row td:first-child { border-left:2px solid #00e0ff !important; }
-.regime-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:600; }
-.score-pill { display:inline-block; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:600; }
-.positive { background:#052e16; color:#4ade80; }
-.negative { background:#2d0e0e; color:#f87171; }
-.neutral  { background:#1c1f2e; color:#9ca3af; }
-.current-badge { display:inline-block; background:rgba(0,224,255,0.13); border:1px solid rgba(0,224,255,0.33); color:#00e0ff; font-size:9px; letter-spacing:1px; padding:2px 6px; border-radius:4px; margin-left:8px; }
-.month-cell { color:#9ca3af; font-size:11px; }
+/* ── SUMMARY ── */
+.summary-box {
+    padding:14px 18px; border-radius:10px;
+    background:rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.06);
+    font-size:12px; color:#888; line-height:1.7;
+    margin-bottom:20px;
+}
+
+/* ── SECTION LABEL ── */
+.sec-label {
+    font-size:10px; letter-spacing:0.15em; color:#555;
+    text-transform:uppercase; font-family:'DM Mono',monospace;
+    margin-bottom:14px; margin-top:32px;
+    padding-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.06);
+}
+
+/* ── AI GRID ── */
+.ai-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
+.ai-card {
+    padding:16px; border-radius:10px;
+    background:rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.06);
+}
+.ai-card-lbl { font-size:9px; letter-spacing:0.15em; text-transform:uppercase; font-family:'DM Mono',monospace; margin-bottom:6px; }
+.ai-card-txt { font-size:12px; color:#888; line-height:1.6; }
+
+.watch-box {
+    display:flex; gap:10px; align-items:flex-start;
+    padding:12px 16px; border-radius:8px;
+    background:rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.06);
+}
+.watch-txt { font-size:12px; color:#aaa; line-height:1.5; }
+
+/* ── SCORE CARDS ── */
+.scores-row { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:8px; }
+.sc-card {
+    padding:18px 14px; border-radius:10px;
+    background:rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.06);
+    position:relative; overflow:hidden;
+}
+.sc-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; }
+.sc-growth::before   { background:#00D4AA; }
+.sc-inflation::before { background:#FF6B35; }
+.sc-liquidity::before { background:#5B8DEF; }
+.sc-risk::before     { background:#FF6B35; }
+.sc-lbl  { font-size:9px; letter-spacing:0.15em; color:#555; text-transform:uppercase; font-family:'DM Mono',monospace; margin-bottom:8px; }
+.sc-val  { font-size:26px; font-weight:700; font-family:'DM Mono',monospace; line-height:1; margin-bottom:10px; }
+.sc-sig  { font-size:10px; color:#555; font-family:'DM Mono',monospace; }
+.sc-growth   .sc-val { color:#00D4AA; }
+.sc-inflation .sc-val { color:#FF6B35; }
+.sc-liquidity .sc-val { color:#5B8DEF; }
+.sc-risk     .sc-val { color:#FF6B35; }
+
+/* ── HISTORY TABLE ── */
+.hist-wrap { border-radius:12px; overflow:hidden; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); }
+.hist-table { width:100%; border-collapse:collapse; }
+.hist-table th {
+    font-size:9px; letter-spacing:0.15em; color:#555; text-transform:uppercase;
+    font-family:'DM Mono',monospace; padding:12px 16px; text-align:left;
+    border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.hist-table td {
+    padding:13px 16px; font-size:11px; color:#aaa;
+    border-bottom:1px solid rgba(255,255,255,0.04);
+    font-family:'DM Mono',monospace;
+}
+.hist-table tr:last-child td { border-bottom:none; }
+.hist-current td { background:rgba(255,255,255,0.015); }
+.hist-current td:first-child { border-left:2px solid #00D4AA; }
+
+.regime-badge {
+    display:inline-flex; align-items:center; gap:5px;
+    padding:3px 9px; border-radius:4px; font-size:10px;
+    font-weight:600; font-family:'DM Mono',monospace;
+}
+.score-pill  { display:inline-block; padding:2px 7px; border-radius:4px; font-size:11px; font-weight:600; font-family:'DM Mono',monospace; }
+.pill-pos    { background:rgba(0,212,170,0.12); color:#00D4AA; }
+.pill-neg    { background:rgba(255,71,87,0.12);  color:#FF4757; }
+.pill-neu    { background:rgba(255,255,255,0.05); color:#666; }
+.cur-badge   { display:inline-block; font-size:8px; letter-spacing:0.1em; padding:2px 5px; border-radius:3px; background:rgba(0,212,170,0.1); border:1px solid rgba(0,212,170,0.25); color:#00D4AA; margin-left:6px; font-family:'DM Mono',monospace; }
+.month-txt   { color:#666; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------------------------
+# ================================================
 # HEADER
-# ------------------------------------------------
+# ================================================
 
 st.markdown(
-    '<div class="header"><div class="pulse"></div>'
-    '<div class="header-title">MACRO REGIME CALCULATOR</div></div>',
+    '<div class="hdr-eyebrow"><span class="hdr-dot"></span>Macro Regime Monitor</div>'
+    '<h1 class="hdr-title">Regime<span style="color:#555;">.</span>ai</h1>'
+    '<p class="hdr-sub">Real-time macro regime detection via live economic data</p>',
     unsafe_allow_html=True
 )
 
-# ------------------------------------------------
-# DASHBOARD
-# ------------------------------------------------
+st.markdown("<div style='margin-bottom:24px;'></div>", unsafe_allow_html=True)
 
-col_left, col_right = st.columns([2, 1])
+# ================================================
+# REGIME BANNER
+# ================================================
 
-with col_left:
-    st.markdown(
-        '<div class="panel">'
-        '<div class="panel-title">CURRENT MACRO ENVIRONMENT</div>'
-        '<div class="quadrant-wrapper"><div class="quadrant-inner">'
-        '<div class="grid">'
-        '<div class="box"></div><div class="box"></div>'
-        '<div class="box"></div><div class="box"></div>'
-        '</div>'
-        '<div class="axis-x"></div>'
-        '<div class="q-label q1">Risk-On Inflation</div>'
-        '<div class="q-label q2">Risk-Off Inflation</div>'
-        '<div class="q-label q3">Risk-Off Disinflation</div>'
-        '<div class="q-label q4">Risk-On Disinflation</div>'
-        '<div class="dot" style="left:' + str(x_percent) + '%;top:' + str(y_percent) + '%;transform:translate(-50%,-50%);"></div>'
-        '</div></div>'
-        '</div>',
-        unsafe_allow_html=True
+favor_tags = ""
+for asset in cfg["favor"]:
+    favor_tags += (
+        '<span class="asset-tag" style="background:' + cfg["color"] + '22;'
+        'border:1px solid ' + cfg["color"] + '44;color:' + cfg["color"] + ';">'
+        + asset + '</span>'
     )
-
-with col_right:
-    st.markdown(
-        '<div class="panel" style="margin-bottom:25px;">'
-        '<div class="panel-title">REGIME CLASSIFICATION</div>'
-        '<div class="regime-box">🔥 ' + regime + '</div>'
-        '<div class="metric-grid">'
-        '<div class="metric">Growth<br><b>' + str(growth_score) + '</b></div>'
-        '<div class="metric">Inflation<br><b>' + str(inflation_score) + '</b></div>'
-        '<div class="metric">Liquidity<br><b>' + str(liquidity_score) + '</b></div>'
-        '<div class="metric">Risk Appetite<br><b>' + str(risk_appetite_rounded) + '</b></div>'
-        '</div>'
-        '</div>'
-        '<div class="panel">'
-        '<div class="panel-title">ASSET ALLOCATION</div>'
-        '<div class="asset-box">'
-        '<div style="margin-bottom:10px;color:#f59e0b;">Favored Assets</div>'
-        '<span class="tag">⭐ Commodities</span>'
-        '<span class="tag">⭐ Value Stocks</span>'
-        '<span class="tag">⭐ TIPS</span>'
-        '<span class="tag">⭐ Real Estate</span>'
-        '</div></div>',
-        unsafe_allow_html=True
-    )
-
-# ------------------------------------------------
-# SCORE BREAKDOWN
-# ------------------------------------------------
-
-st.markdown('<div class="section-header">INDIVIDUAL SCORE BREAKDOWN</div>', unsafe_allow_html=True)
 
 st.markdown(
-    '<div class="scores-grid">'
-
-    '<div class="score-card growth">'
-    '<div class="score-label">GROWTH</div>'
-    '<div class="score-value">' + fmt_score(growth_score) + '</div>'
-    '<div class="score-bar-track"><div class="score-bar-fill" style="width:' + str(bar_width(growth_score)) + '%"></div></div>'
-    '<div class="score-signal">' + signal_text(growth_score, "Growth") + '</div>'
+    '<div class="regime-banner" style="background:' + cfg["bg"] + ';border:1px solid ' + cfg["border"] + ';">'
+    '<div class="regime-icon">' + cfg["icon"] + '</div>'
+    '<div style="flex:1;">'
+    '<div class="regime-label" style="color:' + cfg["color"] + '99;">Current Regime</div>'
+    '<div class="regime-name" style="color:' + cfg["color"] + ';">' + regime + '</div>'
+    '<div class="regime-desc">' + cfg["desc"] + '</div>'
     '</div>'
-
-    '<div class="score-card inflation">'
-    '<div class="score-label">INFLATION</div>'
-    '<div class="score-value">' + fmt_score(inflation_score) + '</div>'
-    '<div class="score-bar-track"><div class="score-bar-fill" style="width:' + str(bar_width(inflation_score)) + '%"></div></div>'
-    '<div class="score-signal">' + signal_text(inflation_score, "Inflation") + '</div>'
+    '<div class="regime-assets">'
+    '<div class="assets-label">Favored Assets</div>'
+    + favor_tags +
     '</div>'
-
-    '<div class="score-card liquidity">'
-    '<div class="score-label">LIQUIDITY</div>'
-    '<div class="score-value">' + fmt_score(liquidity_score) + '</div>'
-    '<div class="score-bar-track"><div class="score-bar-fill" style="width:' + str(bar_width(liquidity_score)) + '%"></div></div>'
-    '<div class="score-signal">' + signal_text(liquidity_score, "Liquidity") + '</div>'
-    '</div>'
-
-    '<div class="score-card risk">'
-    '<div class="score-label">RISK APPETITE</div>'
-    '<div class="score-value">' + fmt_score(risk_appetite_rounded) + '</div>'
-    '<div class="score-bar-track"><div class="score-bar-fill" style="width:' + str(bar_width(risk_appetite)) + '%"></div></div>'
-    '<div class="score-signal">' + signal_text(risk_appetite, "Risk Appetite") + '</div>'
-    '</div>'
-
     '</div>',
     unsafe_allow_html=True
 )
 
-# ------------------------------------------------
-# AI ANALYSIS — auto-runs on load, cached
-# ------------------------------------------------
+# ================================================
+# SCORES + QUADRANT  (3-column like JS)
+# ================================================
 
-st.markdown('<div class="section-header">AI MACRO ANALYSIS</div>', unsafe_allow_html=True)
+col_g, col_i, col_q = st.columns([1, 1, 1])
+
+growth_color    = "#00D4AA" if growth_score    >= 0 else "#FF4757"
+inflation_color = "#FF6B35" if inflation_score >= 0 else "#5B8DEF"
+
+with col_g:
+    st.markdown(
+        '<div class="card">'
+        '<div class="card-label">Growth Score</div>'
+        '<div class="gauge-score" style="color:' + growth_color + ';">' + fmt_score(growth_score) + '</div>'
+        + gauge_bar(growth_score, growth_color) +
+        '<div class="gauge-foot"><span>-100 RISK-OFF</span><span>RISK-ON +100</span></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+with col_i:
+    st.markdown(
+        '<div class="card">'
+        '<div class="card-label">Inflation Score</div>'
+        '<div class="gauge-score" style="color:' + inflation_color + ';">' + fmt_score(inflation_score) + '</div>'
+        + gauge_bar(inflation_score, inflation_color) +
+        '<div class="gauge-foot"><span>-100 DEFLATION</span><span>INFLATION +100</span></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+with col_q:
+    # Quadrant dot: x = growth axis, y = inflation axis (inverted)
+    qx = round(50 + (growth_score  / 100) * 45, 2)
+    qy = round(50 - (inflation_score / 100) * 45, 2)
+    dot_left = str(round(qx - 7, 2)) + "%"
+    dot_top  = str(round(qy - 7, 2)) + "%"
+    ring_left = str(round(qx - 14, 2)) + "%"
+    ring_top  = str(round(qy - 14, 2)) + "%"
+
+    st.markdown(
+        '<div class="quad-wrap">'
+        '<div class="quad-inner">'
+        '<div class="quad-q" style="left:50%;top:0;right:0;bottom:50%;background:rgba(255,107,53,0.04);"></div>'
+        '<div class="quad-q" style="left:0;top:0;right:50%;bottom:50%;background:rgba(255,71,87,0.04);"></div>'
+        '<div class="quad-q" style="left:50%;top:50%;right:0;bottom:0;background:rgba(0,212,170,0.04);"></div>'
+        '<div class="quad-q" style="left:0;top:50%;right:50%;bottom:0;background:rgba(91,141,239,0.04);"></div>'
+        '<div class="quad-axis-v"></div>'
+        '<div class="quad-axis-h"></div>'
+        '<div class="quad-lbl" style="top:6px;left:50%;transform:translateX(-50%);color:#FF4757;">INFLATION</div>'
+        '<div class="quad-lbl" style="bottom:6px;left:50%;transform:translateX(-50%);color:#5B8DEF;">DISINFLATION</div>'
+        '<div class="quad-lbl" style="right:4px;top:50%;transform:translateY(-50%) rotate(90deg);color:#00D4AA;transform-origin:center;">RISK-ON</div>'
+        '<div class="quad-lbl" style="left:4px;top:50%;transform:translateY(-50%) rotate(-90deg);color:#FF6B35;transform-origin:center;">RISK-OFF</div>'
+        '<div class="quad-dot" style="left:' + dot_left + ';top:' + dot_top + ';background:' + cfg["color"] + ';box-shadow:0 0 16px ' + cfg["color"] + '80;"></div>'
+        '<div class="quad-ring" style="left:' + ring_left + ';top:' + ring_top + ';border:1px solid ' + cfg["color"] + '40;animation:pulse 2s infinite;"></div>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+# ================================================
+# AI MACRO ANALYSIS  (auto-runs, cached)
+# ================================================
+
+st.markdown('<div class="sec-label">AI Macro Analysis</div>', unsafe_allow_html=True)
 
 if "ai_analysis" not in st.session_state:
-    with st.spinner("Generating AI macro analysis..."):
+    with st.spinner("Analyzing macro regime..."):
         try:
             st.session_state.ai_analysis = get_ai_analysis(
                 growth_score, inflation_score, liquidity_score, risk_appetite, regime
@@ -335,60 +461,119 @@ if "ai_analysis" not in st.session_state:
             st.error("AI analysis unavailable: " + str(e))
 
 if st.session_state.ai_analysis:
-    a = st.session_state.ai_analysis
-    gi  = a.get("growth_interpretation", "")
-    ii  = a.get("inflation_interpretation", "")
-    li  = a.get("liquidity_interpretation", "")
-    ri  = a.get("risk_appetite_interpretation", "")
-    sm  = a.get("regime_summary", "")
-    kw  = a.get("key_watch", "")
+    a  = st.session_state.ai_analysis
+    gi = a.get("growth_interpretation", "")
+    ii = a.get("inflation_interpretation", "")
+    li = a.get("liquidity_interpretation", "")
+    ri = a.get("risk_appetite_interpretation", "")
+    sm = a.get("regime_summary", "")
+    kw = a.get("key_watch", "")
 
+    # Summary first (like JS summary box)
     st.markdown(
-        '<div class="ai-analysis-grid">'
-        '<div class="ai-card growth-ai"><div class="ai-card-label">📗 GROWTH SIGNAL</div><div class="ai-card-text">' + gi + '</div></div>'
-        '<div class="ai-card inflation-ai"><div class="ai-card-label">📕 INFLATION SIGNAL</div><div class="ai-card-text">' + ii + '</div></div>'
-        '<div class="ai-card liquidity-ai"><div class="ai-card-label">📘 LIQUIDITY SIGNAL</div><div class="ai-card-text">' + li + '</div></div>'
-        '<div class="ai-card risk-ai"><div class="ai-card-label">📙 RISK APPETITE SIGNAL</div><div class="ai-card-text">' + ri + '</div></div>'
-        '</div>'
-        '<div class="regime-summary-box">'
-        '<div class="panel-title">REGIME SUMMARY</div>'
-        '<div class="regime-summary-text">' + sm + '</div>'
-        '<div class="watch-box">'
-        '<span class="watch-icon">👁</span>'
-        '<div class="watch-text"><b>Key Watch:</b> ' + kw + '</div>'
-        '</div></div>',
+        '<div class="summary-box">' + sm + '</div>',
         unsafe_allow_html=True
     )
 
-# ------------------------------------------------
-# HISTORICAL REGIME TIMELINE
-# ------------------------------------------------
+    # 2x2 signal cards
+    st.markdown(
+        '<div class="ai-grid">'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#00D4AA;">Growth Signal</div><div class="ai-card-txt">' + gi + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Inflation Signal</div><div class="ai-card-txt">' + ii + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#5B8DEF;">Liquidity Signal</div><div class="ai-card-txt">' + li + '</div></div>'
+        '<div class="ai-card"><div class="ai-card-lbl" style="color:#FF6B35;">Risk Appetite Signal</div><div class="ai-card-txt">' + ri + '</div></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-st.markdown('<div class="section-header">HISTORICAL REGIME SHIFT TIMELINE — LAST 6 MONTHS</div>', unsafe_allow_html=True)
+    # Key watch
+    st.markdown(
+        '<div class="watch-box">'
+        '<span style="color:#00D4AA;font-size:14px;">◎</span>'
+        '<div class="watch-txt"><span style="color:#00D4AA;font-family:\'DM Mono\',monospace;font-size:10px;letter-spacing:0.1em;">KEY WATCH &nbsp;</span>' + kw + '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+# ================================================
+# INDIVIDUAL SCORE BREAKDOWN
+# ================================================
+
+st.markdown('<div class="sec-label">Individual Score Breakdown</div>', unsafe_allow_html=True)
+
+liq_color  = "#00D4AA" if liquidity_score >= 0 else "#FF4757"
+risk_color = "#00D4AA" if risk_appetite   >= 0 else "#FF4757"
+
+st.markdown(
+    '<div class="scores-row">'
+
+    '<div class="sc-card sc-growth">'
+    '<div class="sc-lbl">Growth</div>'
+    '<div class="sc-val">' + fmt_score(growth_score) + '</div>'
+    + gauge_bar(growth_score, "#00D4AA" if growth_score >= 0 else "#FF4757") +
+    '<div class="sc-sig">' + signal_text(growth_score, "Growth") + '</div>'
+    '</div>'
+
+    '<div class="sc-card sc-inflation">'
+    '<div class="sc-lbl">Inflation</div>'
+    '<div class="sc-val">' + fmt_score(inflation_score) + '</div>'
+    + gauge_bar(inflation_score, "#FF6B35" if inflation_score >= 0 else "#5B8DEF") +
+    '<div class="sc-sig">' + signal_text(inflation_score, "Inflation") + '</div>'
+    '</div>'
+
+    '<div class="sc-card sc-liquidity">'
+    '<div class="sc-lbl">Liquidity</div>'
+    '<div class="sc-val">' + fmt_score(liquidity_score) + '</div>'
+    + gauge_bar(liquidity_score, liq_color) +
+    '<div class="sc-sig">' + signal_text(liquidity_score, "Liquidity") + '</div>'
+    '</div>'
+
+    '<div class="sc-card sc-risk">'
+    '<div class="sc-lbl">Risk Appetite</div>'
+    '<div class="sc-val">' + fmt_score(risk_appetite_rounded) + '</div>'
+    + gauge_bar(risk_appetite, risk_color) +
+    '<div class="sc-sig">' + signal_text(risk_appetite, "Risk Appetite") + '</div>'
+    '</div>'
+
+    '</div>',
+    unsafe_allow_html=True
+)
+
+# ================================================
+# HISTORICAL REGIME TIMELINE
+# ================================================
+
+st.markdown('<div class="sec-label">Historical Regime Shift Timeline — Last 6 Months</div>', unsafe_allow_html=True)
 
 rows_html = ""
 for i, row in enumerate(historical_data):
-    is_current = (i == len(historical_data) - 1)
-    row_class = "history-row current-row" if is_current else "history-row"
-    current_tag = '<span class="current-badge">CURRENT</span>' if is_current else ""
+    is_cur   = (i == len(historical_data) - 1)
+    tr_class = "hist-current" if is_cur else ""
+    cur_tag  = '<span class="cur-badge">CURRENT</span>' if is_cur else ""
     rows_html += (
-        '<tr class="' + row_class + '">'
-        '<td><span class="month-cell">' + row["month"] + '</span>' + current_tag + '</td>'
-        '<td>' + regime_badge(row) + '</td>'
-        '<td>' + score_pill(row["liquidity"]) + '</td>'
-        '<td>' + score_pill(row["growth"]) + '</td>'
-        '<td>' + score_pill(row["inflation"]) + '</td>'
+        '<tr class="' + tr_class + '">'
+        '<td><span class="month-txt">' + row["month"] + '</span>' + cur_tag + '</td>'
+        '<td>' + regime_badge_html(row) + '</td>'
+        '<td>' + score_pill(row["liquidity"])     + '</td>'
+        '<td>' + score_pill(row["growth"])        + '</td>'
+        '<td>' + score_pill(row["inflation"])     + '</td>'
         '<td>' + score_pill(row["risk_appetite"]) + '</td>'
         '</tr>'
     )
 
 st.markdown(
-    '<div class="panel" style="padding:0;overflow:hidden;">'
-    '<table class="history-table">'
+    '<div class="hist-wrap">'
+    '<table class="hist-table">'
     '<thead><tr>'
-    '<th>MONTH</th><th>REGIME</th><th>LIQUIDITY</th><th>GROWTH</th><th>INFLATION</th><th>RISK APPETITE</th>'
+    '<th>Month</th><th>Regime</th><th>Liquidity</th><th>Growth</th><th>Inflation</th><th>Risk Appetite</th>'
     '</tr></thead>'
     '<tbody>' + rows_html + '</tbody>'
     '</table></div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div style="text-align:right;margin-top:16px;font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">'
+    'Macro Regime Calculator</div>',
     unsafe_allow_html=True
 )
