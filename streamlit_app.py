@@ -57,17 +57,37 @@ st.subheader("Current Macro Regime")
 st.success(regime)
 
 # -----------------------------
-# REGIME QUADRANT CHART
+# REGIME QUADRANT MAP
 # -----------------------------
 
-st.subheader("Growth vs Inflation Regime Map")
+import matplotlib.pyplot as plt
 
-data = pd.DataFrame({
-    "Growth":[growth_score],
-    "Inflation":[inflation_score]
-})
+st.subheader("Macro Regime Quadrant")
 
-st.scatter_chart(data, x="Growth", y="Inflation")
+fig, ax = plt.subplots()
+
+# Draw quadrant lines
+ax.axhline(0)
+ax.axvline(0)
+
+# Plot current regime point
+ax.scatter(growth_score, inflation_score, s=200)
+
+# Axis labels
+ax.set_xlabel("Growth Score")
+ax.set_ylabel("Inflation Score")
+
+# Set axis range
+ax.set_xlim(-100, 100)
+ax.set_ylim(-100, 100)
+
+# Label quadrants
+ax.text(50, 50, "Reflation\n(Risk-On Inflation)", ha='center')
+ax.text(-50, 50, "Stagflation\n(Risk-Off Inflation)", ha='center')
+ax.text(50, -50, "Goldilocks\n(Risk-On Disinflation)", ha='center')
+ax.text(-50, -50, "Deflation\nBust", ha='center')
+
+st.pyplot(fig)
 
 # -----------------------------
 # SCORE BREAKDOWN (placeholder)
