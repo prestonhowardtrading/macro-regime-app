@@ -1,5 +1,5 @@
 import streamlit as st
-import pandas as pd
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Macro Regime Dashboard", layout="wide")
 
@@ -10,7 +10,7 @@ st.set_page_config(page_title="Macro Regime Dashboard", layout="wide")
 st.title("Macro Regime Dashboard")
 
 # -----------------------------
-# SAMPLE SCORES (Replace later)
+# SAMPLE SCORES
 # -----------------------------
 
 growth_score = 35
@@ -24,16 +24,16 @@ liquidity_score = 50
 def classify_regime(growth, inflation):
 
     if growth > 0 and inflation < 0:
-        return "Goldilocks Expansion"
+        return "Risk-On Disinflation"
 
     elif growth > 0 and inflation > 0:
-        return "Reflation Boom"
+        return "Risk-On Inflation"
 
     elif growth < 0 and inflation > 0:
-        return "Stagflation"
+        return "Risk-Off Inflation"
 
     else:
-        return "Deflationary Bust"
+        return "Risk-Off Disinflation"
 
 
 regime = classify_regime(growth_score, inflation_score)
@@ -61,36 +61,39 @@ st.success(regime)
 
 st.subheader("Macro Regime Quadrant")
 
-# Create dataframe for point
-data = pd.DataFrame({
-    "Growth":[growth_score],
-    "Inflation":[inflation_score]
-})
+fig = go.Figure()
 
-# Display quadrant labels
-col1, col2 = st.columns(2)
+# quadrant lines
+fig.add_shape(type="line", x0=0, x1=0, y0=-100, y1=100)
+fig.add_shape(type="line", y0=0, y1=0, x0=-100, x1=100)
 
-with col1:
-    st.markdown("### Risk-Off Inflation")
-    st.caption("Stagflation")
+# regime point
+fig.add_trace(go.Scatter(
+    x=[growth_score],
+    y=[inflation_score],
+    mode="markers",
+    marker=dict(size=16),
+    name="Current Position"
+))
 
-    st.markdown("### Risk-Off Disinflation")
-    st.caption("Deflation Bust")
+# quadrant labels
+fig.add_annotation(x=50, y=50, text="Risk-On Inflation", showarrow=False)
+fig.add_annotation(x=-50, y=50, text="Risk-Off Inflation", showarrow=False)
+fig.add_annotation(x=50, y=-50, text="Risk-On Disinflation", showarrow=False)
+fig.add_annotation(x=-50, y=-50, text="Risk-Off Disinflation", showarrow=False)
 
-with col2:
-    st.markdown("### Risk-On Inflation")
-    st.caption("Reflation")
+fig.update_layout(
+    xaxis_title="Growth Score",
+    yaxis_title="Inflation Score",
+    xaxis=dict(range=[-100,100]),
+    yaxis=dict(range=[-100,100]),
+    height=600
+)
 
-    st.markdown("### Risk-On Disinflation")
-    st.caption("Goldilocks")
-
-# Plot position
-st.write("Current Regime Position")
-
-st.scatter_chart(data, x="Growth", y="Inflation")
+st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------
-# SCORE BREAKDOWN
+# COMPONENT BREAKDOWN
 # -----------------------------
 
 st.subheader("Score Components")
@@ -118,17 +121,8 @@ liquidity_components = {
 
 col1, col2, col3 = st.columns(3)
 
-col1.write("Growth Components")
-col1.bar_chart(pd.DataFrame.from_dict(growth_components, orient="index"))
-
-col2.write("Inflation Components")
-col2.bar_chart(pd.DataFrame.from_dict(inflation_components, orient="index"))
-
-col3.write("Liquidity Components")
-col3.bar_chart(pd.DataFrame.from_dict(liquidity_components, orient="index"))
-
-# -----------------------------
-# FOOTER
-# -----------------------------
+col1.bar_chart(growth_components)
+col2.bar_chart(inflation_components)
+col3.bar_chart(liquidity_components)
 
 st.caption("Macro regime framework prototype")
