@@ -312,6 +312,51 @@ section[data-testid="stMain"]      { background: #0A0A0F; }
 .sc-liquidity .sc-val { color:#5B8DEF; }
 .sc-risk     .sc-val { color:#FF6B35; }
 
+/* ── QUAD PANEL (outer card wrapping the chart) ── */
+.quad-panel {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    padding: 20px 18px 16px 18px;
+}
+.quad-panel-title {
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: #555; font-family: 'DM Mono', monospace; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+}
+.quad-panel-title::before {
+    content: '↗'; color: #00D4AA; font-size: 12px;
+}
+
+/* ── SIDEBAR CARDS ── */
+.sidebar-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 14px;
+    padding: 20px;
+}
+.sidebar-card-title {
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: #555; font-family: 'DM Mono', monospace; margin-bottom: 16px;
+}
+
+/* ── MINI SCORE GRID (inside regime classification card) ── */
+.mini-score-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.mini-score {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px; padding: 12px 14px;
+}
+.mini-score-lbl {
+    font-size: 9px; letter-spacing: 0.15em; color: #555;
+    font-family: 'DM Mono', monospace; margin-bottom: 4px;
+}
+.mini-score-val {
+    font-size: 22px; font-weight: 700; font-family: 'DM Mono', monospace; line-height: 1;
+}
+
 /* ── HISTORY TABLE ── */
 .hist-wrap { border-radius:12px; overflow:hidden; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); }
 .hist-table { width:100%; border-collapse:collapse; }
@@ -357,10 +402,10 @@ st.markdown(
 st.markdown("<div style='margin-bottom:24px;'></div>", unsafe_allow_html=True)
 
 # ================================================
-# TOP SECTION: Quadrant (left) + Regime info (right)
+# TOP SECTION: Big quadrant (left) + stacked sidebar (right)
 # ================================================
 
-col_q, col_r = st.columns([1, 2])
+col_q, col_r = st.columns([3, 2])
 
 # Pre-compute quadrant dot positions
 qx        = round(50 + (growth_score   / 100) * 45, 2)
@@ -372,21 +417,30 @@ ring_top  = str(round(qy - 14, 2)) + "%"
 
 with col_q:
     st.markdown(
-        '<div class="quad-wrap">'
+        '<div class="quad-panel">'
+        '<div class="quad-panel-title">CURRENT MACRO ENVIRONMENT</div>'
+        '<div style="text-align:center;font-size:9px;letter-spacing:0.15em;color:#FF4757;font-family:\'DM Mono\',monospace;margin-bottom:8px;">INFLATION</div>'
+        '<div style="display:flex;align-items:stretch;gap:8px;">'
+        '<div style="font-size:9px;letter-spacing:0.12em;color:#FF6B35;font-family:\'DM Mono\',monospace;writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;display:flex;align-items:center;justify-content:center;padding:0 2px;">RISK-OFF</div>'
+        '<div class="quad-wrap" style="flex:1;">'
         '<div class="quad-inner">'
-        '<div class="quad-q" style="left:50%;top:0;right:0;bottom:50%;background:rgba(255,107,53,0.04);"></div>'
-        '<div class="quad-q" style="left:0;top:0;right:50%;bottom:50%;background:rgba(255,71,87,0.04);"></div>'
-        '<div class="quad-q" style="left:50%;top:50%;right:0;bottom:0;background:rgba(0,212,170,0.04);"></div>'
-        '<div class="quad-q" style="left:0;top:50%;right:50%;bottom:0;background:rgba(91,141,239,0.04);"></div>'
+        '<div class="quad-q" style="left:50%;top:0;right:0;bottom:50%;background:rgba(255,107,53,0.07);"></div>'
+        '<div class="quad-q" style="left:0;top:0;right:50%;bottom:50%;background:rgba(255,71,87,0.07);"></div>'
+        '<div class="quad-q" style="left:50%;top:50%;right:0;bottom:0;background:rgba(0,212,170,0.07);"></div>'
+        '<div class="quad-q" style="left:0;top:50%;right:50%;bottom:0;background:rgba(91,141,239,0.07);"></div>'
         '<div class="quad-axis-v"></div>'
         '<div class="quad-axis-h"></div>'
-        '<div class="quad-lbl" style="top:6px;left:50%;transform:translateX(-50%);color:#FF4757;">INFLATION</div>'
-        '<div class="quad-lbl" style="bottom:6px;left:50%;transform:translateX(-50%);color:#5B8DEF;">DISINFLATION</div>'
-        '<div class="quad-lbl" style="right:4px;top:50%;transform:translateY(-50%) rotate(90deg);color:#00D4AA;transform-origin:center;">RISK-ON</div>'
-        '<div class="quad-lbl" style="left:4px;top:50%;transform:translateY(-50%) rotate(-90deg);color:#FF6B35;transform-origin:center;">RISK-OFF</div>'
-        '<div class="quad-dot" style="left:' + dot_left + ';top:' + dot_top + ';background:' + cfg["color"] + ';box-shadow:0 0 16px ' + cfg["color"] + '80;"></div>'
-        '<div class="quad-ring" style="left:' + ring_left + ';top:' + ring_top + ';border:1px solid ' + cfg["color"] + '40;"></div>'
+        '<div style="position:absolute;top:10%;left:53%;font-size:10px;color:rgba(255,107,53,0.45);font-family:\'DM Mono\',monospace;">Risk-On Inflation</div>'
+        '<div style="position:absolute;top:10%;left:3%;font-size:10px;color:rgba(255,71,87,0.45);font-family:\'DM Mono\',monospace;">Risk-Off Inflation</div>'
+        '<div style="position:absolute;top:74%;left:53%;font-size:10px;color:rgba(0,212,170,0.45);font-family:\'DM Mono\',monospace;">Risk-On Disinflation</div>'
+        '<div style="position:absolute;top:74%;left:3%;font-size:10px;color:rgba(91,141,239,0.45);font-family:\'DM Mono\',monospace;">Risk-Off Disinflation</div>'
+        '<div class="quad-dot" style="left:' + dot_left + ';top:' + dot_top + ';background:' + cfg["color"] + ';box-shadow:0 0 20px ' + cfg["color"] + '90;"></div>'
+        '<div class="quad-ring" style="left:' + ring_left + ';top:' + ring_top + ';border:1px solid ' + cfg["color"] + '50;"></div>'
         '</div>'
+        '</div>'
+        '<div style="font-size:9px;letter-spacing:0.12em;color:#00D4AA;font-family:\'DM Mono\',monospace;writing-mode:vertical-rl;white-space:nowrap;display:flex;align-items:center;justify-content:center;padding:0 2px;">RISK-ON</div>'
+        '</div>'
+        '<div style="text-align:center;font-size:9px;letter-spacing:0.15em;color:#5B8DEF;font-family:\'DM Mono\',monospace;margin-top:8px;">DISINFLATION</div>'
         '</div>',
         unsafe_allow_html=True
     )
@@ -401,27 +455,34 @@ for asset in cfg["favor"]:
     )
 
 with col_r:
+    # REGIME CLASSIFICATION card
     st.markdown(
-        '<div style="padding:24px;border-radius:16px;background:' + cfg["bg"] + ';border:1px solid ' + cfg["border"] + ';height:100%;box-sizing:border-box;">'
-
-        # Eyebrow
-        '<div style="font-size:10px;letter-spacing:0.15em;text-transform:uppercase;font-family:\'DM Mono\',monospace;color:' + cfg["color"] + '99;margin-bottom:6px;">Current Regime</div>'
-
-        # Big regime name
-        '<div style="font-size:32px;font-weight:600;letter-spacing:-0.02em;color:' + cfg["color"] + ';line-height:1.1;margin-bottom:6px;">'
-        + cfg["icon"] + ' ' + regime +
+        '<div class="sidebar-card" style="margin-bottom:16px;">'
+        '<div class="sidebar-card-title">REGIME CLASSIFICATION</div>'
+        '<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:10px;background:' + cfg["bg"] + ';border:1px solid ' + cfg["border"] + ';margin-bottom:16px;">'
+        '<span style="font-size:24px;line-height:1;">' + cfg["icon"] + '</span>'
+        '<div>'
+        '<div style="font-size:17px;font-weight:600;color:' + cfg["color"] + ';letter-spacing:-0.01em;">' + regime + '</div>'
+        '<div style="font-size:11px;color:#666;margin-top:3px;">' + cfg["desc"] + '</div>'
         '</div>'
+        '</div>'
+        '<div class="mini-score-grid">'
+        '<div class="mini-score"><div class="mini-score-lbl">GROWTH</div><div class="mini-score-val" style="color:#00D4AA;">' + fmt_score(growth_score) + '</div></div>'
+        '<div class="mini-score"><div class="mini-score-lbl">INFLATION</div><div class="mini-score-val" style="color:#FF6B35;">' + fmt_score(inflation_score) + '</div></div>'
+        '<div class="mini-score"><div class="mini-score-lbl">LIQUIDITY</div><div class="mini-score-val" style="color:#5B8DEF;">' + fmt_score(liquidity_score) + '</div></div>'
+        '<div class="mini-score"><div class="mini-score-lbl">RISK APPETITE</div><div class="mini-score-val" style="color:' + cfg["color"] + ';">' + fmt_score(risk_appetite_rounded) + '</div></div>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
-        # Description
-        '<div style="font-size:13px;color:#777;margin-bottom:24px;">' + cfg["desc"] + '</div>'
-
-        # Divider
-        '<div style="height:1px;background:rgba(255,255,255,0.06);margin-bottom:20px;"></div>'
-
-        # Favored assets
+    # ASSET ALLOCATION card
+    st.markdown(
+        '<div class="sidebar-card">'
+        '<div class="sidebar-card-title">ASSET ALLOCATION</div>'
         '<div style="font-size:10px;letter-spacing:0.12em;text-transform:uppercase;font-family:\'DM Mono\',monospace;color:#555;margin-bottom:10px;">Favored Assets</div>'
-        '<div>' + favor_tags + '</div>'
-
+        '<div style="margin-bottom:14px;">' + favor_tags + '</div>'
+        '<div style="font-size:12px;color:#555;line-height:1.6;">' + cfg["desc"] + '. Position portfolios accordingly with emphasis on the assets above.</div>'
         '</div>',
         unsafe_allow_html=True
     )
