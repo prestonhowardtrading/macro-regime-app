@@ -1,46 +1,31 @@
 import streamlit as st
-import plotly.graph_objects as go
 
-st.set_page_config(page_title="Macro Regime Dashboard", layout="wide")
-
-# -----------------------------
-# TITLE
-# -----------------------------
-
-st.title("Macro Regime Dashboard")
+st.set_page_config(layout="wide")
 
 # -----------------------------
-# SAMPLE SCORES
+# SAMPLE SCORES (replace later)
 # -----------------------------
-
 growth_score = 35
 inflation_score = -10
 liquidity_score = 50
 
 # -----------------------------
-# REGIME CLASSIFICATION
+# DETERMINE REGIME
 # -----------------------------
+if growth_score > 0 and inflation_score > 0:
+    regime = "Risk-On Inflation"
+elif growth_score < 0 and inflation_score > 0:
+    regime = "Risk-Off Inflation"
+elif growth_score > 0 and inflation_score < 0:
+    regime = "Risk-On Disinflation"
+else:
+    regime = "Risk-Off Disinflation"
 
-def classify_regime(growth, inflation):
-
-    if growth > 0 and inflation < 0:
-        return "Risk-On Disinflation"
-
-    elif growth > 0 and inflation > 0:
-        return "Risk-On Inflation"
-
-    elif growth < 0 and inflation > 0:
-        return "Risk-Off Inflation"
-
-    else:
-        return "Risk-Off Disinflation"
-
-
-regime = classify_regime(growth_score, inflation_score)
 
 # -----------------------------
-# SCORE DISPLAY
+# HEADER
 # -----------------------------
+st.title("Macro Regime Dashboard")
 
 col1, col2, col3 = st.columns(3)
 
@@ -48,81 +33,86 @@ col1.metric("Growth Score", growth_score)
 col2.metric("Inflation Score", inflation_score)
 col3.metric("Liquidity Score", liquidity_score)
 
-# -----------------------------
-# CURRENT REGIME
-# -----------------------------
-
 st.subheader("Current Macro Regime")
 st.success(regime)
 
 # -----------------------------
-# REGIME QUADRANT MAP
+# QUADRANT DISPLAY
 # -----------------------------
+highlight = {
+    "Risk-On Inflation": ["active","","",""],
+    "Risk-Off Inflation": ["","active","",""],
+    "Risk-Off Disinflation": ["","","active",""],
+    "Risk-On Disinflation": ["","","","active"],
+}
 
-st.subheader("Macro Regime Quadrant")
+q = highlight[regime]
 
-fig = go.Figure()
+st.markdown(
+f"""
+<style>
 
-# quadrant lines
-fig.add_shape(type="line", x0=0, x1=0, y0=-100, y1=100)
-fig.add_shape(type="line", y0=0, y1=0, x0=-100, x1=100)
+.grid {{
+display:grid;
+grid-template-columns: 1fr 1fr;
+grid-template-rows: 1fr 1fr;
+width:600px;
+height:600px;
+margin:auto;
+border:1px solid #333;
+}}
 
-# regime point
-fig.add_trace(go.Scatter(
-    x=[growth_score],
-    y=[inflation_score],
-    mode="markers",
-    marker=dict(size=16),
-    name="Current Position"
-))
+.box {{
+display:flex;
+align-items:center;
+justify-content:center;
+font-size:20px;
+color:white;
+border:1px solid #333;
+background:#111;
+}}
 
-# quadrant labels
-fig.add_annotation(x=50, y=50, text="Risk-On Inflation", showarrow=False)
-fig.add_annotation(x=-50, y=50, text="Risk-Off Inflation", showarrow=False)
-fig.add_annotation(x=50, y=-50, text="Risk-On Disinflation", showarrow=False)
-fig.add_annotation(x=-50, y=-50, text="Risk-Off Disinflation", showarrow=False)
+.active {{
+background:#9b5b00;
+color:white;
+font-weight:bold;
+}}
 
-fig.update_layout(
-    xaxis_title="Growth Score",
-    yaxis_title="Inflation Score",
-    xaxis=dict(range=[-100,100]),
-    yaxis=dict(range=[-100,100]),
-    height=600
+.center-dot {{
+width:12px;
+height:12px;
+background:white;
+border-radius:50%;
+position:absolute;
+top:50%;
+left:50%;
+transform:translate(-50%,-50%);
+}}
+
+.wrapper {{
+position:relative;
+width:600px;
+margin:auto;
+}}
+
+</style>
+
+<div class="wrapper">
+
+<div class="grid">
+
+<div class="box {q[1]}">Risk-Off Inflation</div>
+<div class="box {q[0]}">Risk-On Inflation</div>
+
+<div class="box {q[2]}">Risk-Off Disinflation</div>
+<div class="box {q[3]}">Risk-On Disinflation</div>
+
+</div>
+
+<div class="center-dot"></div>
+
+</div>
+
+""",
+unsafe_allow_html=True
 )
-
-st.plotly_chart(fig, use_container_width=True)
-
-# -----------------------------
-# COMPONENT BREAKDOWN
-# -----------------------------
-
-st.subheader("Score Components")
-
-growth_components = {
-    "ISM PMI": 10,
-    "Payroll Growth": 8,
-    "Industrial Production": 7,
-    "Retail Sales": 10
-}
-
-inflation_components = {
-    "CPI Trend": -4,
-    "PPI Trend": -2,
-    "Wage Growth": -1,
-    "Commodity Trend": -3
-}
-
-liquidity_components = {
-    "Fed Balance Sheet": 25,
-    "Treasury Liquidity": 10,
-    "Credit Spreads": 8,
-    "Dollar Liquidity": 7
-}
-
-col1, col2, col3 = st.columns(3)
-
-col1.bar_chart(growth_components)
-col2.bar_chart(inflation_components)
-col3.bar_chart(liquidity_components)
-
-st.caption("Macro regime framework prototype")
