@@ -588,9 +588,10 @@ st.markdown("""
 # DASHBOARD (Quadrant + Right Column)
 # ------------------------------------------------
 
-st.markdown(f"""
-<div class="dashboard">
+col_left, col_right = st.columns([2, 1])
 
+with col_left:
+    st.markdown(f"""
     <div class="panel">
         <div class="panel-title">CURRENT MACRO ENVIRONMENT</div>
         <div class="quadrant-wrapper">
@@ -608,34 +609,32 @@ st.markdown(f"""
             <div class="dot" style="left:{x_percent}%;top:{y_percent}%;transform:translate(-50%,-50%);"></div>
         </div>
     </div>
+    """, unsafe_allow_html=True)
 
-    <div class="right-column">
-
-        <div class="panel">
-            <div class="panel-title">REGIME CLASSIFICATION</div>
-            <div class="regime-box">🔥 {regime}</div>
-            <div class="metric-grid">
-                <div class="metric">Growth<br><b>{growth_score}</b></div>
-                <div class="metric">Inflation<br><b>{inflation_score}</b></div>
-                <div class="metric">Liquidity<br><b>{liquidity_score}</b></div>
-                <div class="metric">Risk Appetite<br><b>{round(risk_appetite,1)}</b></div>
-            </div>
+with col_right:
+    st.markdown(f"""
+    <div class="panel" style="margin-bottom:25px;">
+        <div class="panel-title">REGIME CLASSIFICATION</div>
+        <div class="regime-box">🔥 {regime}</div>
+        <div class="metric-grid">
+            <div class="metric">Growth<br><b>{growth_score}</b></div>
+            <div class="metric">Inflation<br><b>{inflation_score}</b></div>
+            <div class="metric">Liquidity<br><b>{liquidity_score}</b></div>
+            <div class="metric">Risk Appetite<br><b>{round(risk_appetite,1)}</b></div>
         </div>
-
-        <div class="panel">
-            <div class="panel-title">ASSET ALLOCATION</div>
-            <div class="asset-box">
-                <div style="margin-bottom:10px;color:#f59e0b;">Favored Assets</div>
-                <span class="tag">⭐ Commodities</span>
-                <span class="tag">⭐ Value Stocks</span>
-                <span class="tag">⭐ TIPS</span>
-                <span class="tag">⭐ Real Estate</span>
-            </div>
-        </div>
-
     </div>
-</div>
-""", unsafe_allow_html=True)
+
+    <div class="panel">
+        <div class="panel-title">ASSET ALLOCATION</div>
+        <div class="asset-box">
+            <div style="margin-bottom:10px;color:#f59e0b;">Favored Assets</div>
+            <span class="tag">⭐ Commodities</span>
+            <span class="tag">⭐ Value Stocks</span>
+            <span class="tag">⭐ TIPS</span>
+            <span class="tag">⭐ Real Estate</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ------------------------------------------------
