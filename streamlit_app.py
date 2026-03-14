@@ -375,9 +375,9 @@ section[data-testid="stMain"]      { background: #0A0A0F; }
 }
 .quad-panel-title::before { content:'↗';color:#00D4AA;font-size:12px; }
 
-/* The aspect-ratio trick: 80% makes it shorter than wide */
+/* aspect-ratio: ~45% keeps the chart compact so it aligns with sidebar */
 .quad-wrap {
-    position:relative;width:100%;padding-bottom:80%;
+    position:relative;width:100%;padding-bottom:45%;
     background:rgba(255,255,255,0.02);border-radius:10px;
     border:1px solid rgba(255,255,255,0.06);overflow:hidden;
 }
@@ -575,16 +575,73 @@ st.markdown('<div class="sec-label">Score Component Breakdown</div>', unsafe_all
 if "score_tab" not in st.session_state:
     st.session_state.score_tab = "growth"
 
+# Render tab selector as mini-score cards (same style as regime classification)
 tab_col1, tab_col2, tab_col3, _ = st.columns([1, 1, 1, 4])
+
 with tab_col1:
-    if st.button("Growth  " + fmt_score(growth_score), key="tab_growth", use_container_width=True):
+    is_active = st.session_state.score_tab == "growth"
+    border_style = "border:1px solid rgba(0,212,170,0.5);" if is_active else "border:1px solid rgba(255,255,255,0.06);"
+    bg_style = "background:rgba(0,212,170,0.08);" if is_active else "background:rgba(255,255,255,0.02);"
+    st.markdown(
+        '<div style="' + bg_style + border_style + 'border-radius:8px;padding:12px 14px;cursor:pointer;">'
+        '<div style="font-size:9px;letter-spacing:0.15em;color:#555;font-family:\'DM Mono\',monospace;margin-bottom:4px;">GROWTH</div>'
+        '<div style="font-size:22px;font-weight:700;font-family:\'DM Mono\',monospace;line-height:1;color:#00D4AA;">' + fmt_score(growth_score) + '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    if st.button("Select", key="tab_growth", use_container_width=True):
         st.session_state.score_tab = "growth"
+        st.rerun()
+
 with tab_col2:
-    if st.button("Inflation  " + fmt_score(inflation_score), key="tab_inflation", use_container_width=True):
+    is_active = st.session_state.score_tab == "inflation"
+    border_style = "border:1px solid rgba(255,107,53,0.5);" if is_active else "border:1px solid rgba(255,255,255,0.06);"
+    bg_style = "background:rgba(255,107,53,0.08);" if is_active else "background:rgba(255,255,255,0.02);"
+    st.markdown(
+        '<div style="' + bg_style + border_style + 'border-radius:8px;padding:12px 14px;cursor:pointer;">'
+        '<div style="font-size:9px;letter-spacing:0.15em;color:#555;font-family:\'DM Mono\',monospace;margin-bottom:4px;">INFLATION</div>'
+        '<div style="font-size:22px;font-weight:700;font-family:\'DM Mono\',monospace;line-height:1;color:#FF6B35;">' + fmt_score(inflation_score) + '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    if st.button("Select", key="tab_inflation", use_container_width=True):
         st.session_state.score_tab = "inflation"
+        st.rerun()
+
 with tab_col3:
-    if st.button("Liquidity  " + fmt_score(liquidity_score), key="tab_liquidity", use_container_width=True):
+    is_active = st.session_state.score_tab == "liquidity"
+    border_style = "border:1px solid rgba(91,141,239,0.5);" if is_active else "border:1px solid rgba(255,255,255,0.06);"
+    bg_style = "background:rgba(91,141,239,0.08);" if is_active else "background:rgba(255,255,255,0.02);"
+    st.markdown(
+        '<div style="' + bg_style + border_style + 'border-radius:8px;padding:12px 14px;cursor:pointer;">'
+        '<div style="font-size:9px;letter-spacing:0.15em;color:#555;font-family:\'DM Mono\',monospace;margin-bottom:4px;">LIQUIDITY</div>'
+        '<div style="font-size:22px;font-weight:700;font-family:\'DM Mono\',monospace;line-height:1;color:#5B8DEF;">' + fmt_score(liquidity_score) + '</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    if st.button("Select", key="tab_liquidity", use_container_width=True):
         st.session_state.score_tab = "liquidity"
+        st.rerun()
+
+# Hide the "Select" button text visually — we only need the click area
+st.markdown("""
+<style>
+[data-testid="stColumns"] .stButton button {
+    background: transparent !important;
+    border: none !important;
+    color: transparent !important;
+    height: 4px !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin-top: -6px !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+[data-testid="stColumns"] .stButton button:hover {
+    background: transparent !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 active_tab = st.session_state.score_tab
 
