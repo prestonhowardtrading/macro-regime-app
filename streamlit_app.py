@@ -2,9 +2,9 @@ import streamlit as st
 
 st.set_page_config(layout="wide")
 
-# -----------------------------
+# ------------------------------------------------
 # SAMPLE DATA
-# -----------------------------
+# ------------------------------------------------
 
 growth_score = 35
 inflation_score = -10
@@ -18,9 +18,9 @@ risk_appetite = (
 
 risk_appetite = max(min(risk_appetite,100),-100)
 
-# -----------------------------
+# ------------------------------------------------
 # REGIME LOGIC
-# -----------------------------
+# ------------------------------------------------
 
 if risk_appetite > 0 and inflation_score > 0:
     regime = "Risk-On Inflation"
@@ -31,27 +31,73 @@ elif risk_appetite > 0 and inflation_score < 0:
 else:
     regime = "Risk-Off Disinflation"
 
-# -----------------------------
+
+# ------------------------------------------------
 # DOT POSITION
-# -----------------------------
+# ------------------------------------------------
 
 x_percent = (risk_appetite + 100) / 200 * 100
 y_percent = (100 - inflation_score) / 200 * 100
 
 
-# -----------------------------
+# ------------------------------------------------
 # GLOBAL CSS
-# -----------------------------
+# ------------------------------------------------
 
 st.markdown("""
 <style>
 
-body {
+body{
 background:#0b1220;
 color:white;
 }
 
-.panel {
+/* HEADER */
+
+.header{
+display:flex;
+align-items:center;
+gap:15px;
+margin-bottom:30px;
+}
+
+.pulse{
+width:18px;
+height:18px;
+border-radius:50%;
+background:#00e0ff;
+position:relative;
+}
+
+.pulse::after{
+content:'';
+position:absolute;
+width:18px;
+height:18px;
+border-radius:50%;
+background:#00e0ff;
+animation:pulse 2s infinite;
+}
+
+@keyframes pulse{
+0%{transform:scale(1);opacity:1;}
+70%{transform:scale(2.2);opacity:0;}
+100%{opacity:0;}
+}
+
+.header-title{
+font-size:22px;
+font-weight:700;
+letter-spacing:1px;
+}
+
+.dashboard{
+display:grid;
+grid-template-columns:2fr 1fr;
+gap:30px;
+}
+
+.panel{
 background:#111827;
 border-radius:14px;
 padding:25px;
@@ -60,15 +106,9 @@ border:1px solid #1f2937;
 
 .panel-title{
 color:#9ca3af;
-font-size:14px;
+font-size:13px;
 letter-spacing:2px;
 margin-bottom:20px;
-}
-
-.dashboard {
-display:grid;
-grid-template-columns: 2fr 1fr;
-gap:30px;
 }
 
 .right-column{
@@ -77,10 +117,13 @@ flex-direction:column;
 gap:25px;
 }
 
+
+/* QUADRANT */
+
 .quadrant-wrapper{
 position:relative;
-width:500px;
-height:500px;
+width:520px;
+height:520px;
 margin:auto;
 }
 
@@ -90,18 +133,16 @@ grid-template-columns:1fr 1fr;
 grid-template-rows:1fr 1fr;
 width:100%;
 height:100%;
-border-radius:10px;
-overflow:hidden;
 }
 
 .box{
 border:1px solid #1f2937;
+background:#0f172a;
 display:flex;
 align-items:center;
 justify-content:center;
 color:#6b7280;
-font-size:15px;
-background:#0f172a;
+font-size:14px;
 }
 
 .axis-x{
@@ -112,23 +153,17 @@ height:1px;
 background:#374151;
 }
 
-.axis-y{
-position:absolute;
-left:50%;
-height:100%;
-width:1px;
-background:#374151;
-}
-
 .dot{
 position:absolute;
 width:16px;
 height:16px;
 background:white;
 border-radius:50%;
-box-shadow:0 0 12px rgba(255,255,255,0.7);
-transition:all .5s ease;
+box-shadow:0 0 15px rgba(255,255,255,.7);
+transition:all .6s ease;
 }
+
+/* quadrant labels */
 
 .q-label{
 position:absolute;
@@ -141,6 +176,9 @@ color:#9ca3af;
 .q3{top:70%;left:10%;}
 .q4{top:70%;left:65%;}
 
+
+/* regime card */
+
 .regime-box{
 background:#2a1b0d;
 border:1px solid #f59e0b;
@@ -148,13 +186,13 @@ padding:15px;
 border-radius:10px;
 color:#f59e0b;
 font-weight:600;
+margin-bottom:15px;
 }
 
 .metric-grid{
 display:grid;
 grid-template-columns:1fr 1fr;
 gap:10px;
-margin-top:15px;
 }
 
 .metric{
@@ -163,6 +201,8 @@ padding:15px;
 border-radius:10px;
 text-align:center;
 }
+
+/* asset box */
 
 .asset-box{
 background:#2a1b0d;
@@ -184,9 +224,22 @@ font-size:13px;
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------
-# DASHBOARD LAYOUT
-# -----------------------------
+
+# ------------------------------------------------
+# HEADER
+# ------------------------------------------------
+
+st.markdown("""
+<div class="header">
+<div class="pulse"></div>
+<div class="header-title">MACRO REGIME CALCULATOR</div>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ------------------------------------------------
+# DASHBOARD
+# ------------------------------------------------
 
 st.markdown(f"""
 <div class="dashboard">
@@ -208,7 +261,6 @@ st.markdown(f"""
 </div>
 
 <div class="axis-x"></div>
-<div class="axis-y"></div>
 
 <div class="q-label q1">Risk-On Inflation</div>
 <div class="q-label q2">Risk-Off Inflation</div>
@@ -247,6 +299,16 @@ Growth<br>
 <div class="metric">
 Inflation<br>
 <b>{inflation_score}</b>
+</div>
+
+<div class="metric">
+Liquidity<br>
+<b>{liquidity_score}</b>
+</div>
+
+<div class="metric">
+Risk Appetite<br>
+<b>{round(risk_appetite,1)}</b>
 </div>
 
 </div>
