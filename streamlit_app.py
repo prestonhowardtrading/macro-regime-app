@@ -184,7 +184,8 @@ def fetch_live_regime(today_str: str) -> dict:
     Called once per calendar day. today_str forces cache to reset at midnight.
     Uses Claude with web_search to pull all 33 indicators and score them.
     """
-    client = anthropic.Anthropic()
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", None)
+    client = anthropic.Anthropic(api_key=api_key)
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
