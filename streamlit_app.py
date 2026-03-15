@@ -219,7 +219,15 @@ def fetch_live_regime(today_str: str) -> dict:
 
 
 # ── Load data (from cache or fresh fetch) ──────────────────────────────────
-today_str = str(date.today())   # e.g. "2025-03-14" — changes daily, busting cache
+today_str = str(date.today())
+
+# DEBUG — remove after confirming key works
+st.write("Secrets keys available:", list(st.secrets.keys()))
+api_key_preview = st.secrets.get("ANTHROPIC_API_KEY", "NOT FOUND")
+if api_key_preview != "NOT FOUND":
+    st.write("Key found, starts with:", str(api_key_preview)[:12] + "...")
+else:
+    st.write("Key NOT FOUND in st.secrets")
 
 with st.spinner("Loading macro regime data..."):
     try:
