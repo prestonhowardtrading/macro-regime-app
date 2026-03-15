@@ -305,7 +305,14 @@ combined = pd.DataFrame({
 combined = combined.dropna(subset=["sp500", "ra"])
 
 if combined.empty:
-    st.error("No overlapping data between S&P 500 and FRED series. Check your FRED key or try again.")
+    st.error("Debug info:")
+    st.write("monthly index sample:", monthly.index[:3].tolist(), "...", monthly.index[-3:].tolist())
+    st.write("sp_monthly index sample:", sp_monthly.index[:3].tolist(), "...", sp_monthly.index[-3:].tolist())
+    st.write("g index sample:", g.index[:3].tolist())
+    st.write("monthly shape:", monthly.shape)
+    st.write("sp_monthly shape:", sp_monthly.shape)
+    st.write("combined before dropna shape:", pd.DataFrame({"sp500": sp_monthly, "ra": ra}).shape)
+    st.write("NaN counts:", pd.DataFrame({"sp500": sp_monthly, "ra": ra}).isna().sum().to_dict())
     st.stop()
 
 # Daily regime for shading
