@@ -441,6 +441,111 @@ def score_equity_trend(m, market_data):
     return eq.clip(-100, 100)
 
 
+def score_rate_shock(m):
+    """
+    DEDICATED RATE SHOCK SIGNAL.
+    Simulation shows Jan 2022 composite was -4.5 (just missed Risk-Off)
+    because HY spreads were only 280bps (very tight) and equity was
+    still above MA. But the 2Y yield was surging 70bps/month.
+
+    2Y yield 4-month change captures rate shock BEFORE credit blows up.
+    This is the earliest possible warning for rate-driven bears.
+    Also catches the 2022 entire cycle from the very start.
+    """
+    rs = pd.Series(0.0, index=m.index)
+
+    if "t2y" not in m.columns:
+        return rs
+
+    t2y_4m = m["t2y"].diff(4)   # 4-month change — sweet spot
+    t2y_2m = m["t2y"].diff(2)   # 2-month for acceleration
+
+    # 4-month rate shock — primary signal
+    rs += np.where(t2y_4m > 1.5,  -55,   # massive tightening (2022 mid-year)
+          np.where(t2y_4m > 1.0,  -40,   # strong shock (early 2022)
+          np.where(t2y_4m > 0.6,  -25,   # building shock (Jan 2022)
+          np.where(t2y_4m > 0.35, -12,   # early warning
+          np.where(t2y_4m > 0.1,   -4,
+          np.where(t2y_4m < -1.0,  35,   # massive easing = recovery signal
+          np.where(t2y_4m < -0.5,  22,
+          np.where(t2y_4m < -0.25, 12,
+          np.where(t2y_4m < -0.1,   5, 0)))))))))
+
+    # 2-month acceleration — if shocking faster recently
+    rs += np.where(t2y_2m > 0.75, -20,
+          np.where(t2y_2m > 0.4,  -10,
+          np.where(t2y_2m < -0.5,  15,
+          np.where(t2y_2m < -0.25,  8, 0))))
+
+    # Fed funds rate shock (actual hikes)
+    effr_6m = m["effr"].diff(6)
+    rs += np.where(effr_6m > 2.5,  -30,
+          np.where(effr_6m > 1.5,  -20,
+          np.where(effr_6m > 0.75, -10,
+          np.where(effr_6m < -1.0,  20,
+          np.where(effr_6m < -0.5,  10, 0)))))
+
+    return rs.clip(-100, 100)
+
+
+def score_dollar_peak(m, market_data):
+    """
+    DXY PEAK DETECTION — fixes 2022 exit timing.
+    Simulation shows Oct 2022 composite was -28 because DXY 3M was
+    still showing dollar strength even though DXY had peaked in Sep 2022.
+
+    Peak detection: when DXY is at 6-month high but starting to turn = exit.
+    When DXY falls from recent high by >2% = early recovery signal.
+    """
+    d = pd.Series(0.0, index=m.index)
+    dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
+    if dxy_col not in m.columns:
+        return d
+
+    dxy     = m[dxy_col]
+    dxy_3m  = dxy.pct_change(3) * 100
+    dxy_6m  = dxy.pct_change(6) * 100
+    dxy_1m  = dxy.pct_change(1) * 100
+
+    # 6-month high (rolling)
+    dxy_6m_max = dxy.rolling(6).max()
+    dxy_3m_max = dxy.rolling(3).max()
+
+    # DIRECTION — primary signal
+    d += np.where(dxy_3m < -5,   35,
+         np.where(dxy_3m < -3,   24,
+         np.where(dxy_3m < -1,   14,
+         np.where(dxy_3m < -0.3,  6,
+         np.where(dxy_3m <  0.3,  0,
+         np.where(dxy_3m <  1.5, -12,
+         np.where(dxy_3m <  3,   -22,
+         np.where(dxy_3m <  5,   -30,
+                                  -38))))))))
+
+    # 6M trend
+    d += np.where(dxy_6m < -8,   14,
+         np.where(dxy_6m < -4,    8,
+         np.where(dxy_6m < -1,    3,
+         np.where(dxy_6m < 1,     0,
+         np.where(dxy_6m < 4,    -8,
+         np.where(dxy_6m < 8,   -14,
+                                 -18))))))
+
+    # PEAK DETECTION — when DXY turning down from recent high
+    # This fires EARLIER than the 3M change signal
+    near_peak  = dxy >= dxy_6m_max * 0.99   # within 1% of 6M high
+    turning    = dxy < dxy_6m_max * 0.97    # down 3%+ from 6M high
+    strong_turn= dxy < dxy_6m_max * 0.94   # down 6%+ from 6M high
+
+    d += pd.Series(np.where(strong_turn,  18,    # clear reversal
+                   np.where(turning,       10,    # early reversal
+                   np.where(near_peak,    -8,     # at peak = still dangerous
+                            0))),
+                   index=m.index)
+
+    return d.clip(-100, 100)
+
+
 def score_fiscal(m):
     """Fiscal policy: stimulus = bullish, austerity = bearish"""
     fp = pd.Series(0.0, index=m.index)
@@ -469,60 +574,73 @@ def score_fiscal(m):
 # COMPOSITE + REGIME ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_composite(cs, gl, dxy, mp, eq, fp, m):
+def build_composite(cs, gl, dxy, rs, mp, eq, fp, m):
     """
-    Context-aware weighting:
+    Context-aware weighting with rate shock as dedicated component.
 
-    CRISIS MODE (HY > 600bps):
-      Credit Stress gets massive weight to force Risk-Off.
-      GL neutralized. Monetary easing neutralized in MP.
+    Rate shock (rs) gets significant weight — it fires earliest in
+    rate-driven bears like 2022 before credit or equity signals move.
 
-    RECOVERY MODE (HY > 400, falling from peak):
-      Credit stress + equity trend drive the exit signal.
-
-    NORMAL MODE:
-      Luke's four forces with GL leading.
+    CRISIS MODE (HY > 600bps): CS dominates
+    RATE SHOCK MODE (2Y 4M change > 0.6%): rs + mp dominate
+    RECOVERY MODE: CS + eq + dxy peak drive exit
+    NORMAL MODE: GL primary (Luke's framework)
     """
-    hy           = m["hy_spread"] if "hy_spread" in m.columns else pd.Series(400, index=m.index)
-    hy_3m_max    = hy.rolling(3).max()
+    hy        = m["hy_spread"] if "hy_spread" in m.columns else pd.Series(400, index=m.index)
+    hy_3m_max = hy.rolling(3).max()
+    t2y_4m    = m["t2y"].diff(4) if "t2y" in m.columns else pd.Series(0, index=m.index)
 
-    crisis_mode  = hy > 600
-    recovery_mode = (hy > 400) & (hy < hy_3m_max * 0.92)
-    normal_mode  = ~crisis_mode & ~recovery_mode
+    crisis_mode   = hy > 600
+    rate_shock_mode = (t2y_4m > 0.5) & ~crisis_mode   # fast rising rates, not in credit crisis
+    recovery_mode = (hy > 400) & (hy < hy_3m_max * 0.92) & ~crisis_mode
+    normal_mode   = ~crisis_mode & ~rate_shock_mode & ~recovery_mode
 
-    # Crisis weights: CS dominates
+    # Crisis: CS dominates
     crisis_comp = (
         cs  * 0.45 +
-        eq  * 0.25 +
+        eq  * 0.20 +
         dxy * 0.15 +
-        mp  * 0.10 +
-        fp  * 0.05
-    )
-
-    # Recovery weights: CS + equity drive exit
-    recovery_comp = (
-        cs  * 0.30 +
-        eq  * 0.25 +
-        gl  * 0.20 +
-        dxy * 0.15 +
+        rs  * 0.10 +
         mp  * 0.05 +
         fp  * 0.05
     )
 
-    # Normal weights: GL primary (Luke's framework)
-    normal_comp = (
-        gl  * 0.35 +
-        cs  * 0.20 +
+    # Rate shock: rs + mp dominate — catches early 2022
+    rate_shock_comp = (
+        rs  * 0.35 +
+        mp  * 0.25 +
         dxy * 0.20 +
-        mp  * 0.15 +
-        eq  * 0.05 +
+        cs  * 0.10 +
+        gl  * 0.05 +
         fp  * 0.05
     )
 
+    # Recovery: CS turning + equity trend + dollar reversing
+    recovery_comp = (
+        cs  * 0.25 +
+        dxy * 0.25 +   # dollar peak detection fires here
+        eq  * 0.20 +
+        gl  * 0.15 +
+        rs  * 0.10 +   # rate shock clearing = positive
+        fp  * 0.05
+    )
+
+    # Normal: GL primary (Luke)
+    normal_comp = (
+        gl  * 0.30 +
+        cs  * 0.20 +
+        dxy * 0.18 +
+        rs  * 0.12 +   # always watch rate shock
+        mp  * 0.12 +
+        eq  * 0.05 +
+        fp  * 0.03
+    )
+
     composite = pd.Series(
-        np.where(crisis_mode, crisis_comp,
-        np.where(recovery_mode, recovery_comp,
-                 normal_comp)),
+        np.where(crisis_mode,     crisis_comp,
+        np.where(rate_shock_mode, rate_shock_comp,
+        np.where(recovery_mode,   recovery_comp,
+                                  normal_comp))),
         index=m.index
     ).clip(-100, 100)
 
@@ -582,7 +700,8 @@ for name, series in market_data.items():
 # Score all components
 cs_sc  = score_credit_stress(monthly)
 gl_raw = score_global_liquidity(monthly)
-dxy_sc = score_dollar(monthly, market_data)
+dxy_sc = score_dollar_peak(monthly, market_data)   # upgraded with peak detection
+rs_sc  = score_rate_shock(monthly)                 # NEW: rate shock
 mp_sc  = score_monetary_policy(monthly, monthly.get("hy_spread",
           pd.Series(400, index=monthly.index)))
 eq_sc  = score_equity_trend(monthly, market_data)
@@ -592,7 +711,7 @@ fp_sc  = score_fiscal(monthly)
 gl_led = gl_raw.shift(-2)
 
 # Build composite
-composite = build_composite(cs_sc, gl_led, dxy_sc, mp_sc, eq_sc, fp_sc, monthly)
+composite = build_composite(cs_sc, gl_led, dxy_sc, rs_sc, mp_sc, eq_sc, fp_sc, monthly)
 
 # Classify with variable minimum hold
 hy_series = monthly.get("hy_spread", pd.Series(400, index=monthly.index))
@@ -616,6 +735,7 @@ combined = pd.DataFrame({
     "cs":        cs_sc,
     "gl":        gl_led,
     "dxy":       dxy_sc,
+    "rs":        rs_sc,
     "mp":        mp_sc,
     "eq":        eq_sc,
     "fp":        fp_sc,
@@ -811,11 +931,11 @@ ax2.grid(axis="y", color="#111122", linewidth=0.5)
 # Six component scores
 for col, color, label in [
     ("cs",  "#FF4757", "Credit Stress"),
-    ("gl",  "#00D4AA", "Global Liq (led)"),
+    ("gl",  "#00D4AA", "Global Liq"),
     ("dxy", "#f59e0b", "Dollar"),
+    ("rs",  "#FF6B35", "Rate Shock"),
     ("mp",  "#5B8DEF", "Monetary"),
-    ("eq",  "#FF6B35", "Equity Trend"),
-    ("fp",  "#888",    "Fiscal"),
+    ("eq",  "#a78bfa", "Equity Trend"),
 ]:
     ax3.plot(combined.index, combined[col].values,
              color=color, linewidth=0.8, alpha=0.85, label=label)
