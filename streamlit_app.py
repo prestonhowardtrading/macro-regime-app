@@ -1,16 +1,254 @@
 import streamlit as st
 import anthropic
 import json
+from datetime import date
 
 st.set_page_config(layout="wide", page_title="Regime.ai")
 
 # ================================================
-# SAMPLE SCORES
+# LIVE DATA FETCH  — cached for 24 hours
+# Every user hitting the app shares this one result.
+# Claude uses web_search to pull all indicators live,
+# scores them per the framework, and returns JSON.
 # ================================================
 
-growth_score    = 35
-inflation_score = -10
-liquidity_score = 50
+SCORING_SYSTEM_PROMPT = """You are a macroeconomic analyst. Research current economic data and calculate Growth, Inflation, and Liquidity scores using the exact scoring frameworks below.
+
+Use web search to find the LATEST available values for every indicator listed. Always search for real current data.
+
+────────────────────────────────────────
+GROWTH SCORE FRAMEWORK (range: -100 to +100)
+────────────────────────────────────────
+MONETARY POLICY (25% weight, max raw ±55):
+- Rate cut prob >70% next 3M = +20 | 40-70% = +10 | neutral = 0 | hike 40-70% = -10 | hike >70% = -20
+- Real rates (10Y TIPS) falling >0.5% over 3M = +10 | stable = 0 | rising >0.5% = -10
+- Fed balance sheet expanding >2% YoY = +10 | stable = 0 | shrinking (QT) = -10
+- Yield curve (10Y-2Y): steepening >50bps = +5 | flat = 0 | inverted >25bps = -10
+
+GLOBAL LIQUIDITY (20% weight, max raw ±20):
+- Global CB balance sheets YoY: >5% = +20 | 2-5% = +10 | stable = 0 | -2 to -5% = -10 | <-5% = -20
+
+FISCAL POLICY (15% weight, max raw ±40):
+- Gov spending growth YoY: >5% = +15 | 2-5% = +5 | flat = 0 | contracting = -10
+- Federal deficit change: increasing >1% GDP = +10 | stable = 0 | shrinking >1% GDP = -10
+- Stimulus legislation: major >2% GDP = +20 | moderate = +10 | tightening = -10
+
+LABOR MARKET (15% weight, max raw ±25):
+- Unemployment 6M change: falling >0.3% = +15 | stable = +5 | rising 0.3-0.7% = -10 | rising >0.7% = -20
+- Initial jobless claims trend: falling = +5 | stable = 0 | rising = -10
+
+LEADING INDICATORS (15% weight, clamp ±30):
+- ISM Mfg PMI: >55=+10 | 52-55=+5 | 48-52=0 | 45-48=-5 | <45=-10; trend ±5
+- ISM Services PMI: >55=+8 | 52-55=+4 | 48-52=0 | 45-48=-4 | <45=-8
+- Conference Board LEI 6M: >1%=+8 | rising slightly=+3 | flat=0 | falling slightly=-5 | <-1%=-10
+- Retail sales YoY: >4%=+6 | 2-4%=+3 | 0-2%=0 | contracting=-5 | <-2%=-8; momentum ±3
+- GDPNow forecast: >3%=+6 | 2-3%=+3 | 1-2%=0 | 0-1%=-3 | <0%=-6
+
+DOLLAR STRENGTH (10% weight, max raw ±15):
+- DXY 3M change: falling >5%=+15 | falling 2-5%=+5 | stable=0 | rising 2-5%=-5 | rising >5%=-15
+
+Growth Score = (MonPol×0.25 + GlobalLiq×0.20 + Fiscal×0.15 + Labor×0.15 + Leading_clamped×0.15 + DXY×0.10), scaled ±100, clamped.
+
+────────────────────────────────────────
+INFLATION SCORE FRAMEWORK (range: -100 to +100)
+────────────────────────────────────────
+INFLATION DATA (25% weight):
+- CPI MoM: accelerating >0.3% = +20 | 0.1-0.3% = +10 | stable = 0 | declining = -10 | sharply declining = -20
+- Core PCE: >3%=+10 | 2-3%=+5 | near 2%=0 | <2%=-10
+- PPI trend: rising rapidly=+10 | falling=-10
+
+COMMODITY PRICES (20% weight):
+- BCOM 6M change: >10%=+15 | 5-10%=+5 | flat=0 | -5 to -10%=-5 | <-10%=-10
+
+MONETARY POLICY - INFLATION LENS (20% weight):
+- Rate cut expectations: aggressive cuts=+15 | moderate easing=+5 | neutral=0 | moderate tightening=-10 | aggressive tightening=-20
+- Real rates: rising >0.5%=-10 | falling >0.5%=+10
+- Fed balance sheet: expanding=+10 | shrinking=-10
+
+LABOR MARKET WAGES (20% weight):
+- Wage growth YoY: >5%=+15 | 3-5%=+5 | 2-3%=0 | <2%=-10
+
+INFLATION EXPECTATIONS (15% weight):
+- 5Y breakeven 3M change: rising >0.5%=+15 | rising slightly=+5 | stable=0 | falling=-10
+
+────────────────────────────────────────
+LIQUIDITY SCORE FRAMEWORK (range: -100 to +100)
+────────────────────────────────────────
+CENTRAL BANK BALANCE SHEETS (40% weight):
+Fed (50%), ECB (20%), BOJ (20%), PBOC (10%)
+Each CB: >10% YoY=+40 | 5-10%=+25 | 1-5%=+10 | flat=0 | -1 to -5%=-10 | -5 to -10%=-25 | <-10%=-40
+
+TREASURY LIQUIDITY TGA/RRP (20% weight):
+- TGA falling >$200B=+20 | $100-200B=+10 | flat=0 | rising $100-200B=-10 | rising >$200B=-20
+- RRP falling rapidly=+15 | moderate decline=+5 | flat=0 | moderate increase=-5 | sharp increase=-15
+- Net Liquidity ROC 3M: >5%=+20 | 2-5%=+10 | -2 to 2%=0 | -2 to -5%=-10 | <-5%=-20
+
+MARKET LIQUIDITY CONDITIONS (15% weight):
+- Real rates: falling >0.75%=+15 | falling 0.25-0.75%=+10 | flat=0 | rising 0.25-0.75%=-10 | rising >0.75%=-15
+- M2 YoY: >8%=+10 | 4-8%=+5 | 0-4%=0 | -4 to 0%=-5 | <-4%=-10
+- Chicago NFCI ΔFCI 3M: <=-0.40=+15 | -0.20 to -0.40=+10 | -0.05 to -0.20=+5 | ±0.05=0 | 0.05-0.20=-5 | 0.20-0.40=-10 | >=0.40=-15
+
+DOLLAR LIQUIDITY (15% weight):
+- DXY 3M ROC: falling >5%=+15 | 2-5%=+10 | 0-2%=+5 | flat=0 | rising 0-2%=-5 | 2-5%=-10 | >5%=-15
+- DXY vs 200DMA: >5% below=+10 | 2-5% below=+5 | ±2%=0 | 2-5% above=-5 | >5% above=-10
+
+CREDIT LIQUIDITY (10% weight):
+- HY spreads: tightening >100bps=+10 | 50-100=+5 | flat=0 | widening 50-100=-5 | >100=-10
+- IG spreads: tightening >40bps=+10 | 20-40=+6 | 5-20=+3 | flat=0 | widening 5-20=-3 | 20-40=-6 | >40=-10
+- Bank lending standards: large easing >10%=+10 | moderate 5-10%=+6 | small 1-5%=+3 | stable=0 | small tightening=-3 | moderate=-6 | large >10%=-10
+
+────────────────────────────────────────
+RESPONSE FORMAT
+────────────────────────────────────────
+Return ONLY valid JSON, no markdown, no extra text:
+{
+  "as_of_date": "YYYY-MM-DD",
+  "growth_score": <-100 to 100>,
+  "inflation_score": <-100 to 100>,
+  "liquidity_score": <-100 to 100>,
+  "growth_components": {
+    "Monetary Policy":     {"weight": "25%", "score": <int>, "max": 55, "indicators": [{"label": "...", "value": "...", "points": <int>, "note": "..."}]},
+    "Global Liquidity":    {"weight": "20%", "score": <int>, "max": 20, "indicators": [...]},
+    "Fiscal Policy":       {"weight": "15%", "score": <int>, "max": 40, "indicators": [...]},
+    "Labor Market":        {"weight": "15%", "score": <int>, "max": 25, "indicators": [...]},
+    "Leading Indicators":  {"weight": "15%", "score": <int>, "max": 30, "indicators": [...]},
+    "Dollar Strength":     {"weight": "10%", "score": <int>, "max": 15, "indicators": [...]}
+  },
+  "inflation_components": {
+    "Inflation Data":          {"weight": "25%", "score": <int>, "max": 40, "indicators": [...]},
+    "Commodity Prices":        {"weight": "20%", "score": <int>, "max": 15, "indicators": [...]},
+    "Monetary Policy":         {"weight": "20%", "score": <int>, "max": 40, "indicators": [...]},
+    "Labor Market (Wages)":    {"weight": "20%", "score": <int>, "max": 15, "indicators": [...]},
+    "Inflation Expectations":  {"weight": "15%", "score": <int>, "max": 15, "indicators": [...]}
+  },
+  "liquidity_components": {
+    "Central Bank Balance Sheets":    {"weight": "40%", "score": <int>, "max": 40, "indicators": [...]},
+    "Treasury Liquidity (TGA/RRP)":   {"weight": "20%", "score": <int>, "max": 20, "indicators": [...]},
+    "Market Liquidity Conditions":    {"weight": "15%", "score": <int>, "max": 15, "indicators": [...]},
+    "Dollar Liquidity (DXY)":         {"weight": "15%", "score": <int>, "max": 15, "indicators": [...]},
+    "Credit Liquidity":               {"weight": "10%", "score": <int>, "max": 10, "indicators": [...]}
+  },
+  "ai_analysis": {
+    "growth_interpretation": "2-sentence interpretation",
+    "inflation_interpretation": "2-sentence interpretation",
+    "liquidity_interpretation": "2-sentence interpretation",
+    "risk_appetite_interpretation": "2-sentence interpretation",
+    "regime_summary": "3-4 sentence macro summary for investors",
+    "key_watch": "One specific indicator to watch"
+  }
+}"""
+
+SCORING_USER_PROMPT = """Today is {today}. Search for the latest values for ALL indicators below and calculate all three scores.
+
+Search for:
+1. CME FedWatch — rate cut probability next 3 months
+2. 10Y TIPS real yield — current level and 3-month change
+3. Federal Reserve balance sheet — size and YoY % change
+4. 10Y-2Y Treasury yield spread
+5. Global central bank balance sheets aggregate YoY change (Fed + ECB + BOJ + PBOC)
+6. ECB balance sheet YoY change
+7. Bank of Japan balance sheet YoY change
+8. PBOC balance sheet YoY change
+9. US government spending YoY growth
+10. US federal deficit as % of GDP and recent trend
+11. Recent major fiscal legislation
+12. US unemployment rate — current and 6-month change
+13. Initial jobless claims — recent trend
+14. ISM Manufacturing PMI — latest reading and 3-month trend
+15. ISM Services PMI — latest reading
+16. Conference Board LEI — latest 6-month change
+17. US Retail Sales — latest YoY and 3-month momentum
+18. Atlanta Fed GDPNow — latest forecast
+19. DXY US Dollar Index — current level and 3-month % change
+20. CPI MoM — latest reading
+21. Core PCE — latest YoY reading
+22. PPI — latest trend
+23. Bloomberg Commodity Index (BCOM) — 6-month change
+24. Average hourly earnings YoY
+25. 5-Year breakeven inflation rate — current and 3-month change
+26. US Treasury General Account (TGA) — current balance and recent change
+27. Federal Reserve Reverse Repo (RRP) — current balance and trend
+28. M2 money supply YoY growth
+29. Chicago Fed NFCI — current level and 3-month change
+30. DXY vs 200-day moving average
+31. High yield credit spreads — current and 3-month change
+32. Investment grade credit spreads — current and 3-month change
+33. Fed Senior Loan Officer Survey — latest bank lending standards
+
+Return only the JSON."""
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_live_regime(today_str: str) -> dict:
+    """
+    Called once per calendar day. today_str forces cache to reset at midnight.
+    Uses Claude with web_search to pull all 33 indicators and score them.
+    """
+    client = anthropic.Anthropic()
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        system=SCORING_SYSTEM_PROMPT,
+        tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        messages=[{
+            "role": "user",
+            "content": SCORING_USER_PROMPT.format(today=today_str)
+        }]
+    )
+
+    # Extract text blocks (may have tool_use blocks interspersed)
+    json_text = ""
+    for block in response.content:
+        if block.type == "text":
+            json_text += block.text
+
+    # Parse JSON — strip any accidental markdown fences
+    json_text = json_text.strip()
+    if json_text.startswith("```"):
+        json_text = json_text.split("```")[1]
+        if json_text.startswith("json"):
+            json_text = json_text[4:]
+    json_text = json_text.strip()
+
+    # Find the first { ... } block
+    start = json_text.find("{")
+    end   = json_text.rfind("}") + 1
+    return json.loads(json_text[start:end])
+
+
+# ── Load data (from cache or fresh fetch) ──────────────────────────────────
+today_str = str(date.today())   # e.g. "2025-03-14" — changes daily, busting cache
+
+with st.spinner("Loading macro regime data..."):
+    try:
+        live = fetch_live_regime(today_str)
+        data_source = "live"
+    except Exception as e:
+        st.warning("Live data unavailable — showing last known values. Error: " + str(e))
+        live = None
+        data_source = "fallback"
+
+# ── Unpack scores ───────────────────────────────────────────────────────────
+if live:
+    growth_score    = int(round(live.get("growth_score",    35)))
+    inflation_score = int(round(live.get("inflation_score", -10)))
+    liquidity_score = int(round(live.get("liquidity_score",  50)))
+    GROWTH_COMPONENTS    = live.get("growth_components",    {})
+    INFLATION_COMPONENTS = live.get("inflation_components", {})
+    LIQUIDITY_COMPONENTS = live.get("liquidity_components", {})
+    AI_ANALYSIS          = live.get("ai_analysis",          {})
+    as_of_date           = live.get("as_of_date", today_str)
+else:
+    # Fallback hardcoded values if API fails
+    growth_score    = 35
+    inflation_score = -10
+    liquidity_score = 50
+    GROWTH_COMPONENTS    = {}
+    INFLATION_COMPONENTS = {}
+    LIQUIDITY_COMPONENTS = {}
+    AI_ANALYSIS          = {}
+    as_of_date           = today_str
 
 risk_appetite = (
     0.5 * liquidity_score +
@@ -58,7 +296,7 @@ REGIME_CONFIG = {
 cfg = REGIME_CONFIG.get(regime, REGIME_CONFIG["Risk-On Disinflation"])
 
 # ================================================
-# HISTORICAL DATA
+# HISTORICAL DATA (static — will be replaced with live data later)
 # ================================================
 
 historical_data = [
@@ -69,140 +307,6 @@ historical_data = [
     {"month": "February 2025", "regime": "Risk-On Disinflation",  "liquidity": 30,  "growth": 20,  "inflation": -5,  "risk_appetite": 21.0,  "color": "#00D4AA"},
     {"month": "March 2025",    "regime": "Risk-On Disinflation",  "liquidity": 50,  "growth": 35,  "inflation": -10, "risk_appetite": risk_appetite_rounded, "color": "#00D4AA"},
 ]
-
-# ================================================
-# COMPONENT BREAKDOWN DATA  (mock values)
-# Each indicator: label, value_str, contribution (points added to subscore), max_abs
-# ================================================
-
-GROWTH_COMPONENTS = {
-    "Monetary Policy": {
-        "weight": "25%", "score": 10, "max": 55,
-        "indicators": [
-            {"label": "Rate Cut Probability (3M)",  "value": "52%",           "points": +10, "note": "CME FedWatch — moderate cut expected"},
-            {"label": "Real Rates (10Y TIPS)",       "value": "1.82% (↓0.3%)", "points":  0,  "note": "Stable over past 3 months"},
-            {"label": "Fed Balance Sheet YoY",       "value": "$6.71T (−1.2%)","points": -10, "note": "Active QT, slight contraction"},
-            {"label": "Yield Curve (10Y−2Y)",        "value": "+18 bps",       "points":  0,  "note": "Flat — not yet steepening"},
-        ]
-    },
-    "Global Liquidity": {
-        "weight": "20%", "score": 10, "max": 20,
-        "indicators": [
-            {"label": "Global CB Balance Sheets YoY","value": "+3.2%",         "points": +10, "note": "ECB + BOJ expanding, Fed contracting"},
-        ]
-    },
-    "Fiscal Policy": {
-        "weight": "15%", "score": 15, "max": 40,
-        "indicators": [
-            {"label": "Gov't Spending Growth YoY",   "value": "+6.1%",         "points": +15, "note": "Above 5% threshold"},
-            {"label": "Federal Deficit Change",      "value": "−0.3% GDP",     "points":  0,  "note": "Stable, no major change"},
-            {"label": "Stimulus Legislation",        "value": "None active",   "points":  0,  "note": "No major bills in pipeline"},
-        ]
-    },
-    "Labor Market": {
-        "weight": "15%", "score": 5, "max": 25,
-        "indicators": [
-            {"label": "Unemployment Rate",           "value": "4.1% (−0.1%)",  "points": +5,  "note": "Stable over 6 months"},
-            {"label": "Initial Jobless Claims",      "value": "221K (stable)", "points":  0,  "note": "No clear trend"},
-        ]
-    },
-    "Leading Indicators": {
-        "weight": "15%", "score": 8, "max": 30,
-        "indicators": [
-            {"label": "ISM Manufacturing PMI",       "value": "49.8",          "points":  0,  "note": "Contractionary, but improving"},
-            {"label": "ISM Services PMI",            "value": "53.5",          "points": +4,  "note": "Healthy expansion"},
-            {"label": "Conference Board LEI",        "value": "−0.3% (6M)",    "points": -5,  "note": "Slight decline"},
-            {"label": "Retail Sales YoY",            "value": "+3.1%",         "points": +3,  "note": "Moderate growth"},
-            {"label": "Atlanta Fed GDPNow",          "value": "2.4%",          "points": +3,  "note": "Above 2% forecast"},
-        ]
-    },
-    "Dollar Strength": {
-        "weight": "10%", "score": -5, "max": 15,
-        "indicators": [
-            {"label": "DXY 3-Month Change",          "value": "104.2 (+2.3%)", "points": -5,  "note": "Modest dollar strength headwind"},
-        ]
-    },
-}
-
-INFLATION_COMPONENTS = {
-    "Inflation Data": {
-        "weight": "25%", "score": 10, "max": 40,
-        "indicators": [
-            {"label": "CPI MoM",                     "value": "+0.2%",         "points": +10, "note": "Rising 0.1–0.3% range"},
-            {"label": "Core PCE",                    "value": "2.6%",          "points": +5,  "note": "Between 2–3%, mild pressure"},
-            {"label": "PPI Trend",                   "value": "Falling",       "points": -10, "note": "Producer prices easing"},
-        ]
-    },
-    "Commodity Prices": {
-        "weight": "20%", "score": -5, "max": 15,
-        "indicators": [
-            {"label": "BCOM Index (6M Change)",      "value": "−6.2%",         "points": -5,  "note": "Moderate commodity decline"},
-        ]
-    },
-    "Monetary Policy": {
-        "weight": "20%", "score": 5, "max": 40,
-        "indicators": [
-            {"label": "Rate Cut Expectations",       "value": "Moderate easing","points": +5,  "note": "1–2 cuts priced in"},
-            {"label": "Real Rates Trend",            "value": "Stable",        "points":  0,  "note": "No major move"},
-            {"label": "Fed Balance Sheet",           "value": "Shrinking (QT)","points": -10, "note": "Deflationary pressure"},
-        ]
-    },
-    "Labor Market (Wages)": {
-        "weight": "20%", "score": 5, "max": 15,
-        "indicators": [
-            {"label": "Avg Hourly Earnings YoY",     "value": "+3.9%",         "points": +5,  "note": "Wage growth 3–5% range"},
-        ]
-    },
-    "Inflation Expectations": {
-        "weight": "15%", "score": -5, "max": 15,
-        "indicators": [
-            {"label": "5Y Breakeven Rate (3M Chg)",  "value": "2.31% (−0.18%)","points": -5,  "note": "Expectations drifting lower"},
-        ]
-    },
-}
-
-LIQUIDITY_COMPONENTS = {
-    "Central Bank Balance Sheets": {
-        "weight": "40%", "score": 30, "max": 40,
-        "indicators": [
-            {"label": "Federal Reserve (50%)",       "value": "$6.71T (−1.2%)","points": -10, "note": "Contraction 1–5% YoY"},
-            {"label": "ECB (20%)",                   "value": "€6.4T (+4.8%)", "points": +25, "note": "Expansion 5–10% YoY"},
-            {"label": "Bank of Japan (20%)",         "value": "¥760T (+6.1%)", "points": +25, "note": "Expansion 5–10% YoY"},
-            {"label": "PBOC (10%)",                  "value": "¥44.8T (+2.1%)","points": +10, "note": "Expansion 1–5% YoY"},
-        ]
-    },
-    "Treasury Liquidity (TGA/RRP)": {
-        "weight": "20%", "score": 15, "max": 20,
-        "indicators": [
-            {"label": "Treasury Gen. Account (TGA)", "value": "$412B (↓$180B)","points": +10, "note": "Drawdown injects liquidity"},
-            {"label": "Reverse Repo (RRP)",          "value": "$98B (↓ rapid)", "points": +15, "note": "RRP drainage, bullish liquidity"},
-            {"label": "Net Liquidity Trend",         "value": "+3.8% (3M ROC)","points": +10, "note": "Net liquidity expanding"},
-        ]
-    },
-    "Market Liquidity Conditions": {
-        "weight": "15%", "score": 5, "max": 15,
-        "indicators": [
-            {"label": "Real Rates",                  "value": "1.82% (stable)","points":  0,  "note": "Flat, no clear signal"},
-            {"label": "M2 Growth YoY",               "value": "+4.2%",         "points": +5,  "note": "4–8% range, mild support"},
-            {"label": "Chicago Fed NFCI (ΔFCI)",     "value": "−0.08 (3M chg)","points": +5,  "note": "Slight easing conditions"},
-        ]
-    },
-    "Dollar Liquidity (DXY)": {
-        "weight": "15%", "score": -5, "max": 15,
-        "indicators": [
-            {"label": "DXY 3-Month ROC",             "value": "+2.3%",         "points": -10, "note": "Dollar rising, tightening"},
-            {"label": "DXY vs 200-Day MA",           "value": "+1.1% above",   "points":  0,  "note": "Within ±2%, neutral"},
-        ]
-    },
-    "Credit Liquidity": {
-        "weight": "10%", "score": 5, "max": 10,
-        "indicators": [
-            {"label": "High Yield Spread",           "value": "312 bps (−55)", "points": +5,  "note": "Tightening 50–100 bps"},
-            {"label": "Investment Grade Spread",     "value": "95 bps (−18)",  "points": +3,  "note": "Tightening 5–20 bps"},
-            {"label": "Bank Lending Standards",      "value": "Net −4% easing","points": +3,  "note": "Small easing"},
-        ]
-    },
-}
 
 # ================================================
 # HELPERS
@@ -303,42 +407,6 @@ def build_component_section(components, accent_color):
 
     html += '</div>'  # close comp-grid
     return html
-
-# ================================================
-# AI ANALYSIS
-# ================================================
-
-def get_ai_analysis(growth, inflation, liquidity, risk_app, regime_name):
-    client = anthropic.Anthropic()
-    prompt = (
-        "You are a macro economist and financial analyst. Analyze the following macro regime scores.\n\n"
-        "Scores:\n"
-        "- Growth Score: "        + str(growth)            + " (-100 to 100)\n"
-        "- Inflation Score: "     + str(inflation)          + " (-100 to 100)\n"
-        "- Liquidity Score: "     + str(liquidity)          + " (-100 to 100)\n"
-        "- Risk Appetite Score: " + str(round(risk_app, 1)) + "\n"
-        "- Current Regime: "      + regime_name             + "\n\n"
-        "Return ONLY valid JSON, no markdown:\n"
-        "{\n"
-        '  "growth_interpretation": "2-sentence interpretation",\n'
-        '  "inflation_interpretation": "2-sentence interpretation",\n'
-        '  "liquidity_interpretation": "2-sentence interpretation",\n'
-        '  "risk_appetite_interpretation": "2-sentence interpretation",\n'
-        '  "regime_summary": "3-4 sentence macro summary for investors",\n'
-        '  "key_watch": "One specific indicator to watch"\n'
-        "}"
-    )
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    raw = msg.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
 
 # ================================================
 # CSS
@@ -672,29 +740,18 @@ st.markdown(
 st.markdown(build_component_section(components, accent), unsafe_allow_html=True)
 
 # ================================================
-# AI MACRO ANALYSIS
+# AI MACRO ANALYSIS  (from live fetch, already cached)
 # ================================================
 
 st.markdown('<div class="sec-label">AI Macro Analysis</div>', unsafe_allow_html=True)
 
-if "ai_analysis" not in st.session_state:
-    with st.spinner("Analyzing macro regime..."):
-        try:
-            st.session_state.ai_analysis = get_ai_analysis(
-                growth_score, inflation_score, liquidity_score, risk_appetite, regime
-            )
-        except Exception as e:
-            st.session_state.ai_analysis = None
-            st.error("AI analysis unavailable: " + str(e))
-
-if st.session_state.ai_analysis:
-    a  = st.session_state.ai_analysis
-    gi = a.get("growth_interpretation", "")
-    ii = a.get("inflation_interpretation", "")
-    li = a.get("liquidity_interpretation", "")
-    ri = a.get("risk_appetite_interpretation", "")
-    sm = a.get("regime_summary", "")
-    kw = a.get("key_watch", "")
+if AI_ANALYSIS:
+    gi = AI_ANALYSIS.get("growth_interpretation", "")
+    ii = AI_ANALYSIS.get("inflation_interpretation", "")
+    li = AI_ANALYSIS.get("liquidity_interpretation", "")
+    ri = AI_ANALYSIS.get("risk_appetite_interpretation", "")
+    sm = AI_ANALYSIS.get("regime_summary", "")
+    kw = AI_ANALYSIS.get("key_watch", "")
 
     st.markdown('<div class="summary-box">' + sm + '</div>', unsafe_allow_html=True)
     st.markdown(
@@ -711,6 +768,11 @@ if st.session_state.ai_analysis:
         '<span style="color:#00D4AA;font-size:14px;">◎</span>'
         '<div class="watch-txt"><span style="color:#00D4AA;font-family:\'DM Mono\',monospace;font-size:10px;letter-spacing:0.1em;">KEY WATCH &nbsp;</span>' + kw + '</div>'
         '</div>',
+        unsafe_allow_html=True
+    )
+else:
+    st.markdown(
+        '<div class="summary-box" style="color:#555;">AI analysis unavailable — live data fetch may have failed.</div>',
         unsafe_allow_html=True
     )
 
@@ -743,7 +805,14 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# ── Footer: cache status + timestamp ───────────────────────────────────────
+cache_note = "Live data" if data_source == "live" else "Fallback data (live fetch failed)"
 st.markdown(
-    '<div style="text-align:right;margin-top:16px;font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">Macro Regime Calculator</div>',
+    '<div style="display:flex;justify-content:space-between;margin-top:16px;">'
+    '<div style="font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">'
+    '<span style="color:#00D4AA;">●</span> ' + cache_note + ' · cached 24h · next refresh ' + today_str
+    '</div>'
+    '<div style="font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">As of ' + as_of_date + '</div>'
+    '</div>',
     unsafe_allow_html=True
 )
