@@ -287,20 +287,24 @@ ra = (0.5 * l + 0.3 * g + 0.2 * i).clip(-100, 100)
 regime = pd.Series("Risk-Off", index=monthly.index)
 regime[ra > 0] = "Risk-On"
 
-# Align S&P
+# Align S&P — strip timezone if present
+sp_daily.index = sp_daily.index.tz_localize(None) if sp_daily.index.tz else sp_daily.index
 sp_monthly = sp_daily.resample("ME").last()
+
+# Align on common monthly index
+common_idx = g.index.intersection(sp_monthly.index)
 combined = pd.DataFrame({
-    "sp500":  sp_monthly,
-    "growth": g,
-    "infl":   i,
-    "liq":    l,
-    "ra":     ra,
-    "regime": regime,
+    "sp500":  sp_monthly.reindex(common_idx),
+    "growth": g.reindex(common_idx),
+    "infl":   i.reindex(common_idx),
+    "liq":    l.reindex(common_idx),
+    "ra":     ra.reindex(common_idx),
+    "regime": regime.reindex(common_idx),
 }).dropna(subset=["sp500"])
 
 # Daily regime for shading
 sp_aligned = sp_daily[sp_daily.index >= combined.index[0]]
-daily_regime = regime.reindex(sp_aligned.index, method="ffill")
+daily_regime = regime.reindex(sp_aligned.index, method="ffill").ffill()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATS
