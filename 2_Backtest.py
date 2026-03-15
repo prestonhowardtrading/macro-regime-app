@@ -129,10 +129,17 @@ def load_all_data(today_str: str, api_key: str):
     df.index = pd.to_datetime(df.index)
     monthly = df.resample("ME").last().ffill().bfill()
 
-    # S&P 500 daily
-    sp_raw = yf.download("^GSPC", start=START, end=END, progress=False)["Close"]
-    sp_daily = sp_raw.squeeze()
-    sp_daily.index = pd.to_datetime(sp_daily.index)
+    # S&P 500 daily — try multiple approaches
+    try:
+        sp_raw = yf.download("^GSPC", start=START, end=END, progress=False, auto_adjust=True)
+        if isinstance(sp_raw.columns, pd.MultiIndex):
+            sp_raw = sp_raw["Close"]["^GSPC"]
+        else:
+            sp_raw = sp_raw["Close"]
+        sp_daily = sp_raw.squeeze()
+        sp_daily.index = pd.to_datetime(sp_daily.index).tz_localize(None)
+    except Exception as e:
+        raise Exception(f"yfinance download failed: {e}")
 
     return monthly, sp_daily, failed
 
@@ -305,14 +312,7 @@ combined = pd.DataFrame({
 combined = combined.dropna(subset=["sp500", "ra"])
 
 if combined.empty:
-    st.error("Debug info:")
-    st.write("monthly index sample:", monthly.index[:3].tolist(), "...", monthly.index[-3:].tolist())
-    st.write("sp_monthly index sample:", sp_monthly.index[:3].tolist(), "...", sp_monthly.index[-3:].tolist())
-    st.write("g index sample:", g.index[:3].tolist())
-    st.write("monthly shape:", monthly.shape)
-    st.write("sp_monthly shape:", sp_monthly.shape)
-    st.write("combined before dropna shape:", pd.DataFrame({"sp500": sp_monthly, "ra": ra}).shape)
-    st.write("NaN counts:", pd.DataFrame({"sp500": sp_monthly, "ra": ra}).isna().sum().to_dict())
+    st.error("No overlapping data between S&P 500 and FRED series. Check your FRED key or try again.")
     st.stop()
 
 # Daily regime for shading
