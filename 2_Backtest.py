@@ -89,7 +89,7 @@ if not fred_key:
     )
     st.stop()
 
-START = "1999-01-01"
+START = "2018-01-01"   # 2018 start gives 12-month MA runway by Jan 2019
 END   = date.today().strftime("%Y-%m-%d")
 TODAY = str(date.today())
 
@@ -664,13 +664,12 @@ st.markdown(
 )
 
 events = {
-    "Dot-com 2000-02":     ("2000-03", "2002-10", "bear"),
-    "GFC 2007-09":         ("2007-07", "2009-03", "bear"),
-    "COVID crash 2020":    ("2020-02", "2020-05", "bear"),
-    "COVID bull 2020-21":  ("2020-05", "2021-12", "bull"),
-    "Bear 2022":           ("2022-01", "2022-10", "bear"),
-    "Bull 2023-2024":      ("2022-10", "2024-12", "bull"),
-    "Current 2025+":       ("2025-01", END,       "bull"),
+    "COVID crash 2020":      ("2020-02", "2020-05", "bear"),
+    "COVID bull 2020-21":    ("2020-05", "2021-12", "bull"),
+    "Bear 2022 (full)":      ("2022-01", "2022-10", "bear"),
+    "Bull 2023-2024":        ("2022-10", "2024-12", "bull"),
+    "Feb-Apr 2025 crash":    ("2025-02", "2025-04", "bear"),
+    "Current 2025+ recovery":("2025-04", END,       "bull"),
 }
 
 st.markdown('<div class="sec-label">Key Market Periods — Model Accuracy</div>',
@@ -757,14 +756,15 @@ ax1.set_xticklabels([])
 ax1.grid(axis="y", color="#111122", linewidth=0.5)
 ax1.xaxis.set_major_locator(mdates.YearLocator(2))
 
-for ds, lbl in [("2000-03","Dot-com"), ("2007-07","GFC"),
-                ("2009-03","GL bottom"), ("2020-02","COVID"),
-                ("2022-01","2022 top"), ("2022-10","2022 low")]:
+for ds, lbl in [("2020-02","COVID crash"), ("2020-03","Fed QE"),
+                ("2021-11","2021 peak"), ("2022-01","2022 top"),
+                ("2022-10","2022 low"), ("2025-02","Feb sell-off"),
+                ("2025-04","Apr low")]:
     try:
         ed = pd.Timestamp(ds)
         if sp_aligned.index[0] <= ed <= sp_aligned.index[-1]:
             ax1.axvline(ed, color="#2a2a3a", linewidth=0.7, linestyle="--", zorder=3)
-            ax1.text(ed, sp_aligned.max() * 0.88, lbl, color="#555", fontsize=6.5,
+            ax1.text(ed, sp_aligned.max() * 0.88, lbl, color="#555", fontsize=7,
                      ha="center", bbox=dict(boxstyle="round,pad=0.2",
                      facecolor="#0A0A0F", edgecolor="#2a2a3a", alpha=0.9))
     except Exception:
@@ -776,8 +776,8 @@ p3 = plt.Line2D([0], [0], color="#f59e0b", linewidth=0.8, linestyle="--", label=
 ax1.legend(handles=[p1, p2, p3], loc="upper left", framealpha=0,
            fontsize=8, labelcolor="#aaa")
 ax1.set_title(
-    "S&P 500 — GL Framework v3  "
-    "|  Crisis-aware · Context-weighted · Equity trend · Fast COVID reaction",
+    "S&P 500 — GL Framework v3  (2019–Present Focus)"
+    "  |  COVID · 2022 Bear · 2025 Crash · Recovery",
     color="#E8E8E8", fontsize=11, fontweight="bold", pad=10, loc="left"
 )
 
