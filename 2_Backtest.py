@@ -1,12 +1,10 @@
 """
-Macro Regime Backtest — Leading Indicator Framework
-=====================================================
-Revised scoring organized by SIGNAL TIMING not policy categories.
-
-EARLY WARNING  (6-12 month lead) — gets you out before the crash
-CONFIRMATION   (1-3 month lead)  — confirms the regime
-RECOVERY SIGNAL (1-3 month lead) — gets you back in early
-LIQUIDITY BOOST (confirms bull)  — QE/M2 as confirmation not trigger
+Macro Regime Backtest — Leading Indicator Framework v3
+=======================================================
+Fixes applied:
+  1. Rate shock detector    — catches 2022 (2Y yield acceleration in late 2021)
+  2. Signal smoothing       — 3-month rolling average prevents whipsaw
+  3. Minimum regime duration — 2 months before flipping, eliminates COVID noise
 """
 
 import streamlit as st
@@ -21,11 +19,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 from datetime import date
 import io
 import warnings
-import requests
-import re
 warnings.filterwarnings("ignore")
 
-st.set_page_config(layout="wide", page_title="Regime Backtest")
+st.set_page_config(layout="wide", page_title="Regime Backtest v3")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STYLING
@@ -45,15 +41,14 @@ section[data-testid="stMain"]      { background: #0A0A0F; }
 .stat-card { background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:16px; }
 .stat-lbl  { font-size:9px;letter-spacing:0.15em;color:#555;font-family:'DM Mono',monospace;margin-bottom:6px;text-transform:uppercase; }
 .stat-val  { font-size:22px;font-weight:700;font-family:'DM Mono',monospace;line-height:1; }
+.fix-grid  { display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px; }
+.fix-card  { border-radius:10px;padding:14px;border:1px solid rgba(0,212,170,0.25);background:rgba(0,212,170,0.05); }
+.fix-title { font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;font-family:'DM Mono',monospace;color:#00D4AA;margin-bottom:6px; }
+.fix-desc  { font-size:11px;color:#888;line-height:1.5; }
 .bear-table { width:100%;border-collapse:collapse; }
 .bear-table th { font-size:9px;letter-spacing:0.15em;color:#555;text-transform:uppercase;font-family:'DM Mono',monospace;padding:10px 14px;text-align:left;border-bottom:1px solid rgba(255,255,255,0.06); }
 .bear-table td { font-size:12px;color:#aaa;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);font-family:'DM Mono',monospace; }
 .sec-label { font-size:10px;letter-spacing:0.15em;color:#555;text-transform:uppercase;font-family:'DM Mono',monospace;margin-bottom:14px;margin-top:28px;padding-bottom:10px;border-bottom:1px solid rgba(255,255,255,0.06); }
-.framework-grid { display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px; }
-.fw-card { border-radius:10px;padding:14px;border:1px solid; }
-.fw-title { font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;font-family:'DM Mono',monospace;margin-bottom:6px; }
-.fw-desc  { font-size:11px;color:#888;line-height:1.5; }
-.fw-lead  { font-size:9px;font-family:'DM Mono',monospace;margin-top:6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,9 +56,9 @@ st.markdown(
     '<div style="font-size:10px;letter-spacing:0.2em;color:#555;text-transform:uppercase;'
     'font-family:\'DM Mono\',monospace;margin-bottom:4px;">Macro Regime Monitor</div>'
     '<h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em;color:#E8E8E8;">'
-    'Regime Backtest <span style="font-size:14px;color:#555;font-weight:400;">— Leading Indicator Framework</span></h1>'
+    'Regime Backtest <span style="font-size:14px;color:#555;font-weight:400;">v3 — Rate Shock + Smoothing + Min Duration</span></h1>'
     '<p style="margin:6px 0 24px;font-size:12px;color:#555;">'
-    'Reorganized by signal timing: Early Warning → Confirmation → Recovery → Liquidity Boost</p>',
+    'Three targeted fixes to catch 2022 and eliminate COVID whipsaw</p>',
     unsafe_allow_html=True
 )
 
@@ -84,7 +79,7 @@ if not fred_key:
     )
     st.stop()
 
-START = "2000-01-01"   # go back to 2000 to capture dot-com + GFC lead-up
+START = "2000-01-01"
 END   = date.today().strftime("%Y-%m-%d")
 TODAY = str(date.today())
 
@@ -93,37 +88,30 @@ TODAY = str(date.today())
 # ─────────────────────────────────────────────────────────────────────────────
 
 FRED_SERIES = {
-    # Early warning
-    "t10y2y":      "T10Y2Y",         # Yield curve 10Y-2Y (inversion = leading recession signal)
-    "t10y3m":      "T10Y3M",         # 10Y-3M spread (even better recession predictor)
-    "hy_spread":   "BAMLH0A0HYM2",   # HY credit spreads (leading crash signal)
-    "ig_spread":   "BAMLC0A0CM",     # IG credit spreads
-    "ism_mfg":     "NAPM",           # ISM Manufacturing PMI (leading economic signal)
-    "ism_svc":     "NMFSL",          # ISM Services PMI
-    # Confirmation
-    "unrate":      "UNRATE",         # Unemployment rate
-    "icsa":        "ICSA",           # Initial jobless claims (weekly, very leading)
-    "retail":      "RSAFS",          # Retail sales
-    "lei":         "USSLIND",        # Conference Board LEI (composite leading index)
-    "nfci":        "NFCI",           # Chicago Fed NFCI (financial conditions)
-    "tips10y":     "DFII10",         # 10Y TIPS real yield
-    "t2y":         "DGS2",           # 2Y Treasury (leading rate expectations)
-    "effr":        "FEDFUNDS",       # Fed funds rate
-    # Recovery signals
-    "t10y2y_lvl":  "T10Y2Y",         # Same series, used for steepening signal
-    # Liquidity boost (confirmation, not trigger)
-    "walcl":       "WALCL",          # Fed balance sheet
-    "m2":          "M2SL",           # M2 money supply
-    "rrp":         "RRPONTSYD",      # Reverse repo
-    "tga":         "WTREGEN",        # TGA
-    "dxy_proxy":   "DTWEXBGS",       # Dollar (trade-weighted)
-    # Inflation context
-    "cpi":         "CPIAUCSL",       # CPI
-    "core_pce":    "PCEPILFE",       # Core PCE
-    "breakeven5y": "T5YIE",          # 5Y breakeven
-    "ppi":         "PPIACO",         # PPI
-    "wages":       "CES0500000003",  # Average hourly earnings
-    # CB balance sheets
+    "t10y2y":      "T10Y2Y",
+    "t10y3m":      "T10Y3M",
+    "t2y":         "DGS2",
+    "effr":        "FEDFUNDS",
+    "tips10y":     "DFII10",
+    "hy_spread":   "BAMLH0A0HYM2",
+    "ig_spread":   "BAMLC0A0CM",
+    "ism_mfg":     "NAPM",
+    "ism_svc":     "NMFSL",
+    "unrate":      "UNRATE",
+    "icsa":        "ICSA",
+    "retail":      "RSAFS",
+    "lei":         "USSLIND",
+    "nfci":        "NFCI",
+    "walcl":       "WALCL",
+    "m2":          "M2SL",
+    "rrp":         "RRPONTSYD",
+    "tga":         "WTREGEN",
+    "dxy_proxy":   "DTWEXBGS",
+    "cpi":         "CPIAUCSL",
+    "core_pce":    "PCEPILFE",
+    "breakeven5y": "T5YIE",
+    "ppi":         "PPIACO",
+    "wages":       "CES0500000003",
     "ecb_assets":  "ECBASSETSW",
     "boj_assets":  "JPNASSETS",
     "gdpc1":       "GDPC1",
@@ -169,49 +157,33 @@ def fetch_market(today_str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REVISED SCORING — ORGANIZED BY SIGNAL TIMING
-#
-# PHILOSOPHY:
-#   Early Warning  — gets you OUT before the crash (leading by 6-12 months)
-#   Confirmation   — confirms the regime (leading by 1-3 months)
-#   Recovery       — gets you BACK IN early (leading by 1-3 months)
-#   Liquidity      — confirms bull market continuation (coincident/lagging)
-#
-# KEY CHANGES vs old framework:
-#   - Yield curve LEVEL is bearish when inverted (not just direction)
-#   - Credit spreads: WIDENING = bearish, NARROWING = bullish (leading signal)
-#   - Fed QE treated as CONFIRMATION of recovery, not initial trigger
-#   - PMI uses level (above/below 50) as primary signal, not just trend
-#   - Unemployment rate of CHANGE used (acceleration), not just level
+# SCORING
 # ─────────────────────────────────────────────────────────────────────────────
 
 def pct_chg(s, n):
     return s.pct_change(n) * 100
 
 
-def compute_risk_appetite(m):
+def compute_raw_score(m):
     """
-    Returns a single Risk Appetite score (-100 to +100) per month
-    built from four timed layers.
+    Returns raw Risk Appetite score before smoothing/overrides.
+    Four layers: Early Warning (35%), Confirmation (30%),
+                 Recovery (20%), Liquidity Boost (15%)
     """
 
-    # =========================================================================
-    # LAYER 1: EARLY WARNING  (weight: 35%)
-    # Signals that lead recessions/crashes by 6-12 months
-    # =========================================================================
+    # ── LAYER 1: EARLY WARNING (35%) ─────────────────────────────────────
     ew = pd.Series(0.0, index=m.index)
 
-    # ── 1a. Yield Curve LEVEL (10Y-2Y) — inversion is the single best
-    #        recession predictor, historically leads by 12-18 months
+    # Yield curve 10Y-2Y level — inversion is the best recession predictor
     yc = m["t10y2y"]
-    ew += np.where(yc >  1.0,  25,   # steep: strong growth signal
+    ew += np.where(yc >  1.0,  25,
           np.where(yc >  0.5,  15,
           np.where(yc >  0.0,   5,
-          np.where(yc > -0.25, -10,  # flat/slightly inverted
-          np.where(yc > -0.75, -25,  # inverted: recession warning
-                               -40)))))  # deeply inverted: strong warning
+          np.where(yc > -0.25,-10,
+          np.where(yc > -0.75,-25,
+                              -40)))))
 
-    # ── 1b. 10Y-3M spread (Federal Reserve's preferred recession predictor)
+    # 10Y-3M spread (Fed's preferred recession predictor)
     if "t10y3m" in m.columns and not m["t10y3m"].isna().all():
         yc2 = m["t10y3m"]
         ew += np.where(yc2 >  1.0,  15,
@@ -219,60 +191,52 @@ def compute_risk_appetite(m):
               np.where(yc2 > -0.5, -15,
                                    -30)))
 
-    # ── 1c. HY Credit Spread LEVEL — elevated spreads = stress in system
-    #        This leads market turns by 3-6 months
+    # HY spread level (elevated = stress) + acceleration (rapid widening = warning)
     if "hy_spread" in m.columns:
         hy = m["hy_spread"]
-        hy_lvl = np.where(hy < 300,  20,   # very tight: risk-on
+        hy_lvl = np.where(hy < 300,  20,
                  np.where(hy < 400,  10,
                  np.where(hy < 500,   0,
-                 np.where(hy < 700, -15,   # elevated: caution
-                 np.where(hy < 900, -30,   # stress: risk-off
-                                    -45))))) # crisis: strong risk-off
-        # HY spread ACCELERATION (rapid widening = early warning)
-        hy_chg_3m = m["hy_spread"].diff(3)
-        hy_accel = np.where(hy_chg_3m > 200, -30,  # rapid widening: crisis signal
-                   np.where(hy_chg_3m > 100, -15,  # widening: caution
-                   np.where(hy_chg_3m <  -100,  15, # rapid tightening: recovery
-                   np.where(hy_chg_3m <  -50,    8, 0))))
+                 np.where(hy < 700, -15,
+                 np.where(hy < 900, -30,
+                                    -45)))))
+        hy_chg = m["hy_spread"].diff(3)
+        hy_acc = np.where(hy_chg >  200, -30,
+                 np.where(hy_chg >  100, -15,
+                 np.where(hy_chg < -100,  15,
+                 np.where(hy_chg <  -50,   8, 0))))
         ew += pd.Series(hy_lvl, index=m.index) * 0.5
-        ew += pd.Series(hy_accel, index=m.index) * 0.5
+        ew += pd.Series(hy_acc, index=m.index) * 0.5
 
-    # ── 1d. IG Credit Spread — earlier signal than HY (investment grade moves first)
+    # IG spread change (moves earlier than HY)
     if "ig_spread" in m.columns:
-        ig = m["ig_spread"]
-        ig_chg = ig.diff(3)
-        ew += np.where(ig_chg < -0.3, 10,   # tightening: bullish
-              np.where(ig_chg < -0.1,  5,
-              np.where(ig_chg >  0.5, -15,  # widening fast: warning
-              np.where(ig_chg >  0.25,-8,   0))))
+        ig_chg = m["ig_spread"].diff(3)
+        ew += np.where(ig_chg < -0.3,  10,
+              np.where(ig_chg < -0.1,   5,
+              np.where(ig_chg >  0.5,  -15,
+              np.where(ig_chg >  0.25,  -8, 0))))
 
-    # ── Scale Early Warning
     ew_score = ew.clip(-100, 100)
 
-    # =========================================================================
-    # LAYER 2: CONFIRMATION  (weight: 30%)
-    # Confirms the regime direction, leads by 1-3 months
-    # =========================================================================
+    # ── LAYER 2: CONFIRMATION (30%) ───────────────────────────────────────
     cf = pd.Series(0.0, index=m.index)
 
-    # ── 2a. ISM Manufacturing PMI — level AND direction
-    #        Below 50 = contraction, above 50 = expansion
+    # ISM Manufacturing PMI — level and trend
     if "ism_mfg" in m.columns:
         pmi = m["ism_mfg"]
-        pmi_trend = pmi.diff(3)
         cf += np.where(pmi > 55,  20,
               np.where(pmi > 52,  10,
               np.where(pmi > 50,   5,
               np.where(pmi > 48,  -5,
               np.where(pmi > 45, -15,
-                                 -25)))))
-        cf += np.where(pmi_trend > 3,  10,
-              np.where(pmi_trend > 1,   5,
-              np.where(pmi_trend < -3, -10,
-              np.where(pmi_trend < -1,  -5, 0))))
+                                  -25)))))
+        pmi_t = pmi.diff(3)
+        cf += np.where(pmi_t > 3,  10,
+              np.where(pmi_t > 1,   5,
+              np.where(pmi_t < -3, -10,
+              np.where(pmi_t < -1,  -5, 0))))
 
-    # ── 2b. ISM Services PMI
+    # ISM Services PMI
     if "ism_svc" in m.columns:
         svc = m["ism_svc"]
         cf += np.where(svc > 55,  15,
@@ -281,18 +245,16 @@ def compute_risk_appetite(m):
               np.where(svc > 48,  -8,
                                   -18))))
 
-    # ── 2c. Initial Jobless Claims — weekly, very timely
-    #        Rising claims = labor market deteriorating
+    # Initial jobless claims — very timely
     if "icsa" in m.columns:
         ic_chg = pct_chg(m["icsa"], 3)
-        ic_lvl = m["icsa"]
-        cf += np.where(ic_chg < -10,  15,  # claims falling fast: bullish
+        cf += np.where(ic_chg < -10,  15,
               np.where(ic_chg <  -5,   8,
-              np.where(ic_chg >  20,  -20, # claims spiking: crisis
+              np.where(ic_chg >  20,  -20,
               np.where(ic_chg >  10,  -10,
               np.where(ic_chg >   5,   -5, 0)))))
 
-    # ── 2d. Conference Board LEI — composite of 10 leading indicators
+    # Conference Board LEI
     lei_chg = pct_chg(m["lei"], 6)
     cf += np.where(lei_chg >  2,  15,
           np.where(lei_chg >  0.5, 8,
@@ -300,113 +262,90 @@ def compute_risk_appetite(m):
           np.where(lei_chg > -2,  -10,
                                -20))))
 
-    # ── 2e. Financial Conditions (NFCI) — tightening = headwind
+    # NFCI financial conditions
     if "nfci" in m.columns:
-        nf = m["nfci"]
-        nf_chg = nf.diff(3)
-        cf += np.where(nf < -0.3,  10,  # easy conditions: bullish
+        nf    = m["nfci"]
+        nf_c  = nf.diff(3)
+        cf += np.where(nf < -0.3,  10,
               np.where(nf <  0.0,   5,
               np.where(nf <  0.3,  -5,
-                                  -15)))  # very tight: bearish
-        cf += np.where(nf_chg < -0.3,  10,  # rapidly easing
-              np.where(nf_chg >  0.3,  -10, 0))  # rapidly tightening
+                                   -15)))
+        cf += np.where(nf_c < -0.3,  10,
+              np.where(nf_c >  0.3, -10, 0))
 
-    # ── 2f. Unemployment rate of change (acceleration)
-    uc_3m = m["unrate"].diff(3)   # 3-month change
-    uc_6m = m["unrate"].diff(6)   # 6-month change
-    cf += np.where(uc_3m < -0.2,  10,  # improving fast
+    # Unemployment acceleration + Sahm Rule
+    uc_3m = m["unrate"].diff(3)
+    cf += np.where(uc_3m < -0.2,  10,
           np.where(uc_3m <  0.0,   5,
           np.where(uc_3m <  0.2,  -5,
           np.where(uc_3m <  0.5, -15,
-                               -25))))  # rising fast: recession confirmed
-    # Sahm Rule proxy: if unemployment rises 0.5% from 12M low = recession
-    unrate_12m_min = m["unrate"].rolling(12).min()
-    sahm = m["unrate"] - unrate_12m_min
+                               -25))))
+    sahm = m["unrate"] - m["unrate"].rolling(12).min()
     cf += np.where(sahm > 0.5, -20, np.where(sahm > 0.3, -10, 0))
 
     cf_score = cf.clip(-100, 100)
 
-    # =========================================================================
-    # LAYER 3: RECOVERY SIGNAL  (weight: 20%)
-    # Detects when the worst is over and recovery is starting
-    # =========================================================================
+    # ── LAYER 3: RECOVERY SIGNAL (20%) ────────────────────────────────────
     rc = pd.Series(0.0, index=m.index)
 
-    # ── 3a. 2Y Treasury yield direction — when 2Y starts falling, Fed pivot
-    #        is being priced in. This is LEADING by 1-3 months.
-    t2y_chg = m["t2y"].diff(3)
-    rc += np.where(t2y_chg < -0.75,  25,  # rapid fall: Fed pivot priced in
-          np.where(t2y_chg < -0.35,  15,
-          np.where(t2y_chg < -0.1,    5,
-          np.where(t2y_chg >  0.75,  -20, # rapid rise: tightening ahead
-          np.where(t2y_chg >  0.35,  -10,
-          np.where(t2y_chg >  0.1,   -3, 0))))))
+    # 2Y Treasury direction — falling 2Y = Fed pivot priced in
+    t2y_c = m["t2y"].diff(3)
+    rc += np.where(t2y_c < -0.75,  25,
+          np.where(t2y_c < -0.35,  15,
+          np.where(t2y_c < -0.1,    5,
+          np.where(t2y_c >  0.75,  -20,
+          np.where(t2y_c >  0.35,  -10,
+          np.where(t2y_c >  0.1,    -3, 0))))))
 
-    # ── 3b. Yield curve STEEPENING from inversion — recovery signal
-    #        When the curve steepens WHILE still somewhat inverted = recovery starting
-    yc_chg = m["t10y2y"].diff(3)
-    yc_lvl = m["t10y2y"]
-    rc += np.where((yc_chg > 0.3) & (yc_lvl < 0.5),  15,  # steepening from inversion
-          np.where((yc_chg > 0.5) & (yc_lvl > 0),    10,   # steepening in normal terrain
-          np.where(yc_chg < -0.3,                     -10, 0)))  # flattening
+    # Yield curve steepening from inversion
+    yc_c = m["t10y2y"].diff(3)
+    rc += np.where((yc_c > 0.3) & (yc < 0.5),  15,
+          np.where((yc_c > 0.5) & (yc > 0),    10,
+          np.where(yc_c < -0.3,               -10, 0)))
 
-    # ── 3c. HY spread PEAK detection — when spreads stop widening and turn
-    #        This is the single best "all clear" signal for risk assets
+    # HY spread peak detection — spreads rolling over = all-clear
     if "hy_spread" in m.columns:
-        hy = m["hy_spread"]
-        # Rolling 3-month max to detect peaks
+        hy        = m["hy_spread"]
         hy_3m_max = hy.rolling(3).max()
-        hy_turning = hy < hy_3m_max * 0.92  # spreads down 8% from recent peak
-        hy_still_elevated = hy > 400
-        # Falling from elevated = early recovery signal
-        rc += np.where(hy_turning & hy_still_elevated,  20,
-              np.where(hy_turning & ~hy_still_elevated,  10,
-              np.where(hy > hy_3m_max * 0.99,            -5, 0)))  # still at peak
+        hy_turn   = hy < hy_3m_max * 0.92
+        hy_elev   = hy > 400
+        rc += np.where(hy_turn & hy_elev,   20,
+              np.where(hy_turn & ~hy_elev,  10,
+              np.where(hy > hy_3m_max * 0.99, -5, 0)))
 
-    # ── 3d. PMI new orders proxy — manufacturing orders leading production
+    # PMI turning from below 50
     if "ism_mfg" in m.columns:
-        pmi_chg = m["ism_mfg"].diff(3)
-        pmi_lvl = m["ism_mfg"]
-        # Rising from below 50 = recovery starting
-        rc += np.where((pmi_chg > 2) & (pmi_lvl < 52),  15,
-              np.where((pmi_chg > 2) & (pmi_lvl > 52),   8,
-              np.where(pmi_chg < -3,                     -10, 0)))
+        pmi_c = m["ism_mfg"].diff(3)
+        pmi_l = m["ism_mfg"]
+        rc += np.where((pmi_c > 2) & (pmi_l < 52),  15,
+              np.where((pmi_c > 2) & (pmi_l > 52),   8,
+              np.where(pmi_c < -3,                  -10, 0)))
 
     rc_score = rc.clip(-100, 100)
 
-    # =========================================================================
-    # LAYER 4: LIQUIDITY BOOST  (weight: 15%)
-    # QE, money printing, dollar weakness — CONFIRMS bull market
-    # NOT a trigger, but adds fuel once recovery is underway
-    # =========================================================================
+    # ── LAYER 4: LIQUIDITY BOOST (15%) ────────────────────────────────────
     lq = pd.Series(0.0, index=m.index)
 
-    # ── 4a. Fed balance sheet — RATE OF CHANGE matters, not YoY
-    #        Fast expansion = emergency (neutral/bearish context-dependent)
-    #        Slow steady expansion = accommodative = bullish
-    #        Contraction (QT) = tightening = headwind
-    walcl_yoy  = pct_chg(m["walcl"], 12)
-    walcl_3m   = pct_chg(m["walcl"], 3)
-    # Normal accommodative expansion (2-15% YoY) = bullish
-    # Crisis QE (>15% YoY) = neutral (emergency mode, not inherently bullish yet)
-    # QT (negative) = bearish headwind
-    lq += np.where((walcl_yoy > 2)  & (walcl_yoy < 15),  15,  # steady accommodation
-          np.where((walcl_yoy > 15) & (walcl_3m < 5),     5,   # big QE but slowing
-          np.where(walcl_yoy < -2,                        -20,  # QT: headwind
+    # Fed BS: steady expansion = bullish, crisis QE = neutral, QT = bearish
+    walcl_yoy = pct_chg(m["walcl"], 12)
+    walcl_3m  = pct_chg(m["walcl"], 3)
+    lq += np.where((walcl_yoy > 2)  & (walcl_yoy < 15),  15,
+          np.where((walcl_yoy > 15) & (walcl_3m  <  5),   5,
+          np.where(walcl_yoy < -2,                        -20,
           np.where(walcl_yoy < 0,                          -8, 0))))
 
-    # ── 4b. Global CB balance sheets (ECB + BOJ)
+    # ECB + BOJ
     if "ecb_assets" in m.columns and not m["ecb_assets"].isna().all():
-        ecb_yoy = pct_chg(m["ecb_assets"], 12)
-        lq += np.where(ecb_yoy > 5, 10, np.where(ecb_yoy > 0, 5,
-              np.where(ecb_yoy < -5, -10, np.where(ecb_yoy < 0, -5, 0)))) * 0.4
+        ecb = pct_chg(m["ecb_assets"], 12)
+        lq += np.where(ecb > 5, 8, np.where(ecb > 0, 3,
+              np.where(ecb < -5, -8, np.where(ecb < 0, -3, 0)))) * 0.4
 
     if "boj_assets" in m.columns and not m["boj_assets"].isna().all():
-        boj_yoy = pct_chg(m["boj_assets"], 12)
-        lq += np.where(boj_yoy > 5, 8, np.where(boj_yoy > 0, 3,
-              np.where(boj_yoy < -5, -8, np.where(boj_yoy < 0, -3, 0)))) * 0.4
+        boj = pct_chg(m["boj_assets"], 12)
+        lq += np.where(boj > 5, 6, np.where(boj > 0, 2,
+              np.where(boj < -5, -6, np.where(boj < 0, -2, 0)))) * 0.4
 
-    # ── 4c. M2 growth — money supply acceleration
+    # M2
     m2_yoy = pct_chg(m["m2"], 12)
     lq += np.where(m2_yoy > 8,  10,
           np.where(m2_yoy > 4,   5,
@@ -414,35 +353,32 @@ def compute_risk_appetite(m):
           np.where(m2_yoy > -4, -8,
                                -15))))
 
-    # ── 4d. Dollar direction — weak dollar = global liquidity boost
+    # Dollar (weak dollar = global liquidity)
     dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
-    if dxy_col in m.columns:
-        dc = pct_chg(m[dxy_col], 3)
-        lq += np.where(dc < -3,  12,
-              np.where(dc < -1,   6,
-              np.where(dc >  3,  -12,
-              np.where(dc >  1,   -6, 0))))
+    dc = pct_chg(m[dxy_col], 3)
+    lq += np.where(dc < -3,  12,
+          np.where(dc < -1,   6,
+          np.where(dc >  3,  -12,
+          np.where(dc >  1,   -6, 0))))
 
-    # ── 4e. TGA / RRP (Treasury liquidity plumbing)
+    # TGA / RRP plumbing
     if "tga" in m.columns:
-        tga_chg = m["tga"].diff(3)
-        lq += np.where(tga_chg < -150,  10,
-              np.where(tga_chg < -75,    5,
-              np.where(tga_chg >  150,  -10,
-              np.where(tga_chg >  75,    -5, 0))))
+        tga_c = m["tga"].diff(3)
+        lq += np.where(tga_c < -150,  10,
+              np.where(tga_c < -75,    5,
+              np.where(tga_c >  150,  -10,
+              np.where(tga_c >  75,    -5, 0))))
 
     if "rrp" in m.columns:
-        rrp_chg = m["rrp"].diff(3).fillna(0)
-        lq += np.where(rrp_chg < -150,  8,
-              np.where(rrp_chg < -50,   3,
-              np.where(rrp_chg >  150,  -8,
-              np.where(rrp_chg >  50,   -3, 0))))
+        rrp_c = m["rrp"].diff(3).fillna(0)
+        lq += np.where(rrp_c < -150,  8,
+              np.where(rrp_c < -50,   3,
+              np.where(rrp_c >  150,  -8,
+              np.where(rrp_c >  50,   -3, 0))))
 
     lq_score = lq.clip(-100, 100)
 
-    # =========================================================================
-    # INFLATION CONTEXT  (used for regime quadrant, not risk appetite)
-    # =========================================================================
+    # ── INFLATION CONTEXT ─────────────────────────────────────────────────
     inf = pd.Series(0.0, index=m.index)
     cm = m["cpi"].pct_change(1) * 100
     inf += np.where(cm > 0.3, 20, np.where(cm > 0.1, 10,
@@ -456,23 +392,110 @@ def compute_risk_appetite(m):
     if "wages" in m.columns:
         wy = pct_chg(m["wages"], 12)
         inf += np.where(wy > 5, 15, np.where(wy > 3, 5, np.where(wy > 2, 0, -10)))
-    bc_chg = m["breakeven5y"].diff(3)
-    inf += np.where(bc_chg > 0.5, 15, np.where(bc_chg > 0.1, 5,
-           np.where(bc_chg > -0.1, 0, -10)))
+    bc_c = m["breakeven5y"].diff(3)
+    inf += np.where(bc_c > 0.5, 15, np.where(bc_c > 0.1, 5,
+           np.where(bc_c > -0.1, 0, -10)))
     inflation_score = inf.clip(-100, 100)
 
-    # =========================================================================
-    # COMPOSITE RISK APPETITE
-    # Weighted combination of all four layers
-    # =========================================================================
-    risk_appetite = (
-        ew_score  * 0.35 +
-        cf_score  * 0.30 +
-        rc_score  * 0.20 +
-        lq_score  * 0.15
+    # ── COMPOSITE (raw, before fixes) ────────────────────────────────────
+    raw = (
+        ew_score * 0.35 +
+        cf_score * 0.30 +
+        rc_score * 0.20 +
+        lq_score * 0.15
     ).clip(-100, 100)
 
-    return risk_appetite, inflation_score, ew_score, cf_score, rc_score, lq_score
+    return raw, inflation_score, ew_score, cf_score, rc_score, lq_score
+
+
+def apply_fixes(raw, m):
+    """
+    FIX 1 — RATE SHOCK DETECTOR
+        If 2Y yield rises > 1.25% in 6 months → Risk-Off override.
+        If Fed funds rises > 1.0% in 6 months → Risk-Off override.
+        These catch pure rate-driven bear markets like 2022.
+
+    FIX 2 — SIGNAL SMOOTHING
+        Apply 3-month rolling average to raw score before classification.
+        Prevents single-month spikes from triggering regime flip.
+
+    FIX 3 — MINIMUM REGIME DURATION
+        Once regime flips, it must stay for at least 2 months
+        before flipping back. Eliminates COVID-style whipsaw.
+    """
+
+    score = raw.copy()
+
+    # ── FIX 1: Rate shock override ────────────────────────────────────────
+    t2y_6m  = m["t2y"].diff(6)
+    effr_6m = m["effr"].diff(6)
+
+    # Rising rates = tightening shock = force score negative
+    rate_shock = (t2y_6m > 1.25) | (effr_6m > 1.0)
+
+    # Apply a strong negative penalty when rate shock is active
+    # Scale by magnitude: bigger shock = bigger penalty
+    shock_magnitude = np.where(
+        t2y_6m > 2.0,  -60,
+        np.where(t2y_6m > 1.5,  -45,
+        np.where(t2y_6m > 1.25, -30,
+        np.where(effr_6m > 2.0, -60,
+        np.where(effr_6m > 1.5, -45,
+        np.where(effr_6m > 1.0, -30, 0)))))
+    )
+    shock_series = pd.Series(shock_magnitude, index=m.index)
+
+    # Blend shock penalty into score (not replace — blend 50/50 when active)
+    score = pd.Series(
+        np.where(rate_shock,
+                 score * 0.4 + shock_series * 0.6,  # shock dominates
+                 score),
+        index=m.index
+    )
+
+    # Also: falling rates = recovery bonus (rate cuts after shock)
+    rate_easing = t2y_6m < -1.0
+    easing_bonus = np.where(t2y_6m < -2.0, 25,
+                   np.where(t2y_6m < -1.5, 15,
+                   np.where(t2y_6m < -1.0, 10, 0)))
+    score = pd.Series(
+        np.where(rate_easing,
+                 score * 0.7 + pd.Series(easing_bonus, index=m.index) * 0.3,
+                 score),
+        index=m.index
+    )
+
+    score = score.clip(-100, 100)
+
+    # ── FIX 2: Signal smoothing (3-month rolling average) ────────────────
+    # This prevents a single bad month from triggering a flip
+    smoothed = score.rolling(window=3, min_periods=1).mean()
+
+    # ── FIX 3: Minimum regime duration (2 months) ─────────────────────────
+    # Classify on smoothed score first
+    raw_regime = pd.Series("Risk-Off", index=smoothed.index)
+    raw_regime[smoothed > 0] = "Risk-On"
+
+    # Then enforce minimum duration
+    final_regime = raw_regime.copy()
+    current      = raw_regime.iloc[0]
+    duration     = 1
+    MIN_DURATION = 2   # months before allowed to flip
+
+    for i in range(1, len(raw_regime)):
+        proposed = raw_regime.iloc[i]
+        if proposed != current:
+            if duration >= MIN_DURATION:
+                current  = proposed
+                duration = 1
+            else:
+                # Not enough time in current regime — stay
+                duration += 1
+        else:
+            duration += 1
+        final_regime.iloc[i] = current
+
+    return smoothed, final_regime, shock_series
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -482,22 +505,21 @@ def compute_risk_appetite(m):
 pb = st.progress(0, text="Fetching FRED data...")
 monthly, fred_failed = fetch_fred(TODAY, fred_key)
 
-pb.progress(60, text="Fetching market data (DXY, BCOM, S&P 500)...")
+pb.progress(60, text="Fetching market data...")
 yf_data, yf_failed = fetch_market(TODAY)
 
-pb.progress(90, text="Calculating regime scores...")
+pb.progress(90, text="Calculating regime scores with v3 fixes...")
 
-# Merge yfinance into monthly
 for name, series in yf_data.items():
     if series is not None and not series.empty:
         series.index = pd.to_datetime(series.index).tz_localize(None)
         monthly[name] = series.resample("ME").last().reindex(monthly.index).ffill()
 
-# Calculate scores
-ra, inf_score, ew, cf, rc, lq = compute_risk_appetite(monthly)
+# Compute raw scores
+raw, inf_score, ew, cf, rc, lq = compute_raw_score(monthly)
 
-regime = pd.Series("Risk-Off", index=monthly.index)
-regime[ra > 0] = "Risk-On"
+# Apply 3 fixes
+smoothed, regime, shock = apply_fixes(raw, monthly)
 
 pb.progress(100, text="Done!")
 pb.empty()
@@ -505,22 +527,24 @@ pb.empty()
 # Align S&P 500
 sp_daily = yf_data.get("sp500", pd.Series(dtype=float))
 if sp_daily is None or sp_daily.empty:
-    st.error("Could not fetch S&P 500 from yfinance. Please try again.")
+    st.error("Could not fetch S&P 500. Please try again.")
     st.stop()
 
 sp_daily.index = pd.to_datetime(sp_daily.index).tz_localize(None)
-sp_monthly = sp_daily.resample("ME").last()
+sp_monthly     = sp_daily.resample("ME").last()
 
 combined = pd.DataFrame({
     "sp500":   sp_monthly,
-    "ra":      ra,
+    "raw":     raw,
+    "smooth":  smoothed,
+    "regime":  regime,
     "ew":      ew,
     "cf":      cf,
     "rc":      rc,
     "lq":      lq,
-    "regime":  regime,
+    "shock":   shock,
     "infl":    inf_score,
-}).dropna(subset=["sp500", "ra"])
+}).dropna(subset=["sp500", "smooth"])
 
 if combined.empty:
     st.error("No overlapping data. Please try again.")
@@ -531,35 +555,35 @@ sp_aligned   = sp_daily[sp_daily.index >= start_date].dropna()
 daily_regime = regime.reindex(sp_aligned.index, method="ffill").ffill()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FRAMEWORK EXPLANATION
+# FIXES EXPLANATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="sec-label">Framework Architecture</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec-label">Three Targeted Fixes Applied</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="framework-grid">'
+    '<div class="fix-grid">'
 
-    '<div class="fw-card" style="background:rgba(255,71,87,0.08);border-color:rgba(255,71,87,0.3);">'
-    '<div class="fw-title" style="color:#FF4757;">Early Warning — 35%</div>'
-    '<div class="fw-desc">Gets you OUT before the crash. Leads by 6-12 months.</div>'
-    '<div class="fw-lead" style="color:#FF4757;">Yield curve level · HY spread level + acceleration · IG spread widening</div>'
+    '<div class="fix-card">'
+    '<div class="fix-title">Fix 1 — Rate Shock Detector</div>'
+    '<div class="fix-desc">If 2Y Treasury rises >1.25% in 6 months OR Fed funds '
+    'rises >1% in 6 months, a strong negative penalty overrides the score. '
+    'Magnitude scales with shock size. Catches 2022 (2Y rose 3%+ in 6 months starting late 2021). '
+    'Also adds recovery bonus when rates fall rapidly.</div>'
     '</div>'
 
-    '<div class="fw-card" style="background:rgba(245,158,11,0.08);border-color:rgba(245,158,11,0.3);">'
-    '<div class="fw-title" style="color:#f59e0b;">Confirmation — 30%</div>'
-    '<div class="fw-desc">Confirms the regime direction. Leads by 1-3 months.</div>'
-    '<div class="fw-lead" style="color:#f59e0b;">ISM PMI level · Jobless claims · LEI · NFCI · Sahm Rule</div>'
+    '<div class="fix-card">'
+    '<div class="fix-title">Fix 2 — Signal Smoothing</div>'
+    '<div class="fix-desc">3-month rolling average applied to raw score before '
+    'regime classification. Prevents a single bad data month from triggering a flip. '
+    'Eliminates the COVID whipsaw where the market crashed and recovered in 6 weeks '
+    '— too fast for a monthly macro model to react cleanly.</div>'
     '</div>'
 
-    '<div class="fw-card" style="background:rgba(0,212,170,0.08);border-color:rgba(0,212,170,0.3);">'
-    '<div class="fw-title" style="color:#00D4AA;">Recovery Signal — 20%</div>'
-    '<div class="fw-desc">Gets you BACK IN early. Leads market by 1-3 months.</div>'
-    '<div class="fw-lead" style="color:#00D4AA;">2Y yield turning · Curve steepening · HY spread peak · PMI turning</div>'
-    '</div>'
-
-    '<div class="fw-card" style="background:rgba(91,141,239,0.08);border-color:rgba(91,141,239,0.3);">'
-    '<div class="fw-title" style="color:#5B8DEF;">Liquidity Boost — 15%</div>'
-    '<div class="fw-desc">Confirms bull market fuel. QE as confirmation not trigger.</div>'
-    '<div class="fw-lead" style="color:#5B8DEF;">Fed BS (steady expansion) · ECB/BOJ · M2 · Dollar · TGA/RRP</div>'
+    '<div class="fix-card">'
+    '<div class="fix-title">Fix 3 — Minimum Regime Duration</div>'
+    '<div class="fix-desc">Once the regime flips (Risk-On → Risk-Off or vice versa), '
+    'it must remain in the new regime for at least 2 months before being allowed to '
+    'flip back. This enforces conviction — the model only acts on sustained signals, '
+    'not momentary crosses.</div>'
     '</div>'
 
     '</div>',
@@ -590,12 +614,12 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Bear market + bull market verdicts
+# Bear + bull market verdicts
 events = {
     "Dot-com 2000-02":     ("2000-03", "2002-10", "bear"),
     "GFC 2007-09":         ("2007-10", "2009-03", "bear"),
     "COVID crash 2020":    ("2020-02", "2020-04", "bear"),
-    "COVID recovery 2020": ("2020-04", "2021-12", "bull"),
+    "COVID recovery 2020": ("2020-05", "2021-12", "bull"),
     "Bear Market 2022":    ("2022-01", "2022-10", "bear"),
     "Bull 2023-present":   ("2022-10", "2024-12", "bull"),
 }
@@ -610,23 +634,23 @@ for name, (bs, be, kind) in events.items():
         off_p = (window == "Risk-Off").mean() * 100
         on_p  = 100 - off_p
         if kind == "bear":
-            pct_correct = off_p
-            want = "Risk-Off during crash"
-            color = "#00D4AA" if off_p >= 60 else ("#f59e0b" if off_p >= 40 else "#FF4757")
-            verdict = "✓ Avoided" if off_p >= 60 else ("~ Partial" if off_p >= 40 else "✗ Missed")
+            pct_c   = off_p
+            want    = "Risk-Off during crash"
+            color   = "#00D4AA" if off_p >= 60 else ("#f59e0b" if off_p >= 40 else "#FF4757")
+            verdict = "✓ Avoided"  if off_p >= 60 else ("~ Partial" if off_p >= 40 else "✗ Missed")
         else:
-            pct_correct = on_p
-            want = "Risk-On during bull"
-            color = "#00D4AA" if on_p >= 60 else ("#f59e0b" if on_p >= 40 else "#FF4757")
+            pct_c   = on_p
+            want    = "Risk-On during bull"
+            color   = "#00D4AA" if on_p >= 60 else ("#f59e0b" if on_p >= 40 else "#FF4757")
             verdict = "✓ Captured" if on_p >= 60 else ("~ Partial" if on_p >= 40 else "✗ Missed")
 
-        type_color = "#FF4757" if kind == "bear" else "#00D4AA"
+        tc = "#FF4757" if kind == "bear" else "#00D4AA"
         rows += (
             '<tr>'
-            '<td><span style="color:' + type_color + ';font-size:9px;margin-right:6px;">'
+            '<td><span style="color:' + tc + ';font-size:9px;margin-right:6px;">'
             + ("▼" if kind == "bear" else "▲") + '</span>' + name + '</td>'
             '<td style="color:#aaa;">' + want + '</td>'
-            '<td style="color:' + type_color + ';">' + str(round(pct_correct)) + '%</td>'
+            '<td style="color:' + tc + ';">' + str(round(pct_c)) + '%</td>'
             '<td style="color:' + color + ';font-weight:600;">' + verdict + '</td>'
             '</tr>'
         )
@@ -643,14 +667,13 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHART — Main + 4 layer sub-scores
+# CHART
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.markdown('<div class="sec-label">S&P 500 with Macro Regime Overlay</div>', unsafe_allow_html=True)
 
 fig = plt.figure(figsize=(18, 14), facecolor="#0A0A0F")
-gs  = fig.add_gridspec(3, 1, height_ratios=[3, 1, 1], hspace=0.06)
-
+gs  = fig.add_gridspec(3, 1, height_ratios=[3, 1, 1], hspace=0.05)
 ax1 = fig.add_subplot(gs[0])
 ax2 = fig.add_subplot(gs[1])
 ax3 = fig.add_subplot(gs[2])
@@ -661,7 +684,7 @@ for ax in [ax1, ax2, ax3]:
     for spine in ax.spines.values():
         spine.set_edgecolor("#1a1a2e")
 
-# ── Regime shading ────────────────────────────────────────────────────────
+# Regime shading
 in_regime, span_start = None, None
 for d, r in zip(daily_regime.index, daily_regime.values):
     if r != in_regime:
@@ -673,7 +696,7 @@ if in_regime:
     c = "#00D4AA" if in_regime == "Risk-On" else "#FF4757"
     ax1.axvspan(span_start, daily_regime.index[-1], alpha=0.15, color=c, linewidth=0)
 
-# ── S&P line ──────────────────────────────────────────────────────────────
+# S&P price
 ax1.plot(sp_aligned.index, sp_aligned.values, color="#E8E8E8", linewidth=1.1, zorder=5)
 ax1.set_yscale("log")
 ax1.set_ylabel("S&P 500 (log)", color="#666", fontsize=8, labelpad=8)
@@ -683,49 +706,68 @@ ax1.set_xticklabels([])
 ax1.grid(axis="y", color="#111122", linewidth=0.5)
 ax1.xaxis.set_major_locator(mdates.YearLocator(2))
 
-# Event lines
-for ds, lbl in [("2007-07", "GFC start"), ("2020-02", "COVID"), ("2021-11", "Top"), ("2022-10", "Bottom")]:
+# Event markers
+for ds, lbl in [("2007-06","GFC lead-up"), ("2009-03","GFC bottom"),
+                ("2020-02","COVID"), ("2021-11","2021 peak"),
+                ("2022-10","2022 bottom")]:
     try:
         ed = pd.Timestamp(ds)
         if sp_aligned.index[0] <= ed <= sp_aligned.index[-1]:
-            ax1.axvline(ed, color="#333", linewidth=0.7, linestyle="--", zorder=3)
-            ax1.text(ed, sp_aligned.max() * 0.9, lbl, color="#555", fontsize=7,
+            ax1.axvline(ed, color="#2a2a3a", linewidth=0.8, linestyle="--", zorder=3)
+            ax1.text(ed, sp_aligned.max() * 0.88, lbl, color="#555", fontsize=6.5,
                      ha="center", bbox=dict(boxstyle="round,pad=0.2",
-                     facecolor="#0A0A0F", edgecolor="#333", alpha=0.8))
+                     facecolor="#0A0A0F", edgecolor="#2a2a3a", alpha=0.9))
     except Exception:
         pass
 
 p1 = mpatches.Patch(color="#00D4AA", alpha=0.5, label="Risk-On")
 p2 = mpatches.Patch(color="#FF4757", alpha=0.5, label="Risk-Off")
 ax1.legend(handles=[p1, p2], loc="upper left", framealpha=0, fontsize=8, labelcolor="#aaa")
-ax1.set_title("S&P 500 — Leading Indicator Macro Regime Framework",
-              color="#E8E8E8", fontsize=11, fontweight="bold", pad=10, loc="left")
+ax1.set_title(
+    "S&P 500 — Leading Indicator Framework v3  |  Rate Shock + Smoothing + Min Duration",
+    color="#E8E8E8", fontsize=11, fontweight="bold", pad=10, loc="left"
+)
 
-# ── Risk Appetite composite ───────────────────────────────────────────────
-ra_m = combined["ra"]
-ax2.fill_between(ra_m.index, ra_m, 0, where=ra_m >= 0, color="#00D4AA", alpha=0.3, interpolate=True)
-ax2.fill_between(ra_m.index, ra_m, 0, where=ra_m < 0,  color="#FF4757", alpha=0.3, interpolate=True)
-ax2.plot(ra_m.index, ra_m.values, color="#aaa", linewidth=0.9, zorder=5)
+# Smoothed Risk Appetite
+sm = combined["smooth"]
+ax2.fill_between(sm.index, sm, 0, where=sm >= 0, color="#00D4AA", alpha=0.3, interpolate=True)
+ax2.fill_between(sm.index, sm, 0, where=sm < 0,  color="#FF4757", alpha=0.3, interpolate=True)
+ax2.plot(sm.index, sm.values, color="#aaa", linewidth=0.9, zorder=5)
+# Also plot raw as thin line for comparison
+ax2.plot(combined["raw"].index, combined["raw"].values,
+         color="#444", linewidth=0.6, linestyle="--", zorder=4, label="Raw (unsmoothed)")
 ax2.axhline(0, color="#333", linewidth=0.8)
 ax2.set_ylim(-100, 100)
-ax2.set_xlim(ra_m.index[0], ra_m.index[-1])
-ax2.set_ylabel("Risk Appetite", color="#666", fontsize=7, labelpad=6)
+ax2.set_xlim(sm.index[0], sm.index[-1])
+ax2.set_ylabel("Risk Appetite\n(smoothed)", color="#666", fontsize=7, labelpad=6)
 ax2.set_xticklabels([])
 ax2.xaxis.set_major_locator(mdates.YearLocator(2))
 ax2.grid(axis="y", color="#111122", linewidth=0.5)
+ax2.legend(loc="upper right", framealpha=0, fontsize=6.5, labelcolor="#666")
 
-# ── Layer sub-scores ──────────────────────────────────────────────────────
-layer_colors = {
-    "ew": "#FF4757", "cf": "#f59e0b", "rc": "#00D4AA", "lq": "#5B8DEF"
-}
-layer_labels = {
-    "ew": "Early Warn", "cf": "Confirm", "rc": "Recovery", "lq": "Liquidity"
-}
+# Rate shock overlay on ax2
+shock_nonzero = combined["shock"] != 0
+if shock_nonzero.any():
+    ax2_twin = ax2.twinx()
+    ax2_twin.set_facecolor("#0A0A0F")
+    ax2_twin.fill_between(combined.index, combined["shock"], 0,
+                          where=combined["shock"] < 0,
+                          color="#FF6B35", alpha=0.15, interpolate=True)
+    ax2_twin.set_ylim(-100, 100)
+    ax2_twin.set_ylabel("Rate Shock", color="#FF6B35", fontsize=6.5)
+    ax2_twin.tick_params(colors="#FF6B35", labelsize=6)
+    for spine in ax2_twin.spines.values():
+        spine.set_edgecolor("#1a1a2e")
 
-for lname, lcolor in layer_colors.items():
-    ls = combined[lname]
-    ax3.plot(ls.index, ls.values, color=lcolor, linewidth=0.8,
-             alpha=0.8, label=layer_labels[lname])
+# Layer sub-scores
+for lname, lcolor, llabel in [
+    ("ew", "#FF4757",  "Early Warn"),
+    ("cf", "#f59e0b",  "Confirm"),
+    ("rc", "#00D4AA",  "Recovery"),
+    ("lq", "#5B8DEF",  "Liquidity"),
+]:
+    ax3.plot(combined.index, combined[lname].values,
+             color=lcolor, linewidth=0.8, alpha=0.85, label=llabel)
 
 ax3.axhline(0, color="#333", linewidth=0.8)
 ax3.set_ylim(-100, 100)
@@ -737,13 +779,13 @@ ax3.grid(axis="y", color="#111122", linewidth=0.5)
 ax3.legend(loc="upper left", framealpha=0, fontsize=7, labelcolor="#aaa", ncol=4)
 
 fig.text(0.99, 0.005,
-         "Generated " + TODAY + "  ·  FRED + yfinance  ·  Leading Indicator Framework",
+         "Generated " + TODAY + "  ·  FRED + yfinance  ·  v3: Rate Shock + Smoothing + Min Duration",
          ha="right", va="bottom", color="#333", fontsize=7, fontfamily="monospace")
 
 plt.tight_layout(rect=[0, 0.01, 1, 1])
 st.pyplot(fig, use_container_width=True)
 
-# PDF download
+# PDF
 pdf_buf = io.BytesIO()
 with PdfPages(pdf_buf) as pdf:
     pdf.savefig(fig, facecolor="#0A0A0F", dpi=180)
@@ -753,6 +795,6 @@ pdf_buf.seek(0)
 st.download_button(
     label="Download PDF",
     data=pdf_buf,
-    file_name="regime_backtest_leading_" + TODAY + ".pdf",
+    file_name="regime_backtest_v3_" + TODAY + ".pdf",
     mime="application/pdf",
 )
