@@ -1,28 +1,32 @@
 """
-Macro Regime Backtest — GL Framework v3
-========================================
-Four precise fixes from diagnosis:
+Macro Regime Backtest — Clean Build v4
+=======================================
+Rebuilt from scratch based on Luke Davis framework diagnosis.
 
-FIX 1 — RATE CUTS DURING CREDIT CRISIS = REACTIVE (not bullish)
-  When HY > 550bps, monetary easing signals are neutralized.
-  A Fed cutting rates during a credit crisis is fighting the fire,
-  not adding fuel. Same logic as crisis QE.
+PROBLEMS WITH PREVIOUS VERSIONS:
+  - Mode switching (crisis/normal/recovery) often failed to trigger
+  - Too many signals canceling each other out → flat composite
+  - Cache preventing START date change from taking effect
+  - Government spending data (FGEXPND) is quarterly → NaN-heavy
 
-FIX 2 — COVID: 1-MONTH MINIMUM, NO SMOOTHING ON CRISIS SIGNALS
-  COVID crash lasted 33 days. 2-month smoothing means it never
-  sustained. Crisis signals (HY > 600bps) bypass smoothing and
-  trigger Risk-Off immediately with only 1-month hold.
+DESIGN PRINCIPLES:
+  1. Eight independent signals, each scored -100 to +100
+  2. Simple weighted average — no mode switching
+  3. Signals are ASYMMETRIC: bearish signals stronger when conditions extreme
+  4. Oil/inflation signal added (Luke's transcript 2 explicitly calls this out)
+  5. Focus 2019-present — START=2019 but fetch from 2016 for warmup
+  6. Cache busted with new function names
 
-FIX 3 — DOT-COM: ADD EQUITY MOMENTUM + LEI EARLY WARNING
-  Dot-com had no credit crisis early. Need equity-based signal:
-  S&P 500 below falling 12-month MA + LEI declining = Risk-Off.
-  This captures valuation-driven bear markets without needing
-  a credit crisis.
+WEIGHTS (from Luke's framework priority):
+  Global Liquidity ROC:    22%  (primary driver)
+  Dollar Direction:        20%  (key lever — weak = bullish)
+  Rate Shock (2Y yield):   18%  (catches 2022 before credit blows)
+  Credit Stress (HY):      16%  (crisis detector)
+  Monetary Policy:         10%  (Fed tone)
+  Equity Trend (price MA): 8%   (50/200 DMA — Luke's visual signal)
+  Oil/Inflation Risk:      6%   (Luke transcript 2: oil → inflation → Fed can't cut)
 
-FIX 4 — 2022 EXIT: MONETARY POLICY FADE DURING RECOVERY
-  When credit stress is recovering (spreads falling from peak)
-  AND dollar is weakening, reduce monetary policy penalty weight.
-  The rate hike PACE matters — Fed slowing = less restrictive.
+REGIME: Risk-Off when composite < -12. Min 1-month hold (COVID fast).
 """
 
 import streamlit as st
@@ -39,7 +43,7 @@ import io
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(layout="wide", page_title="Regime Backtest v3")
+st.set_page_config(layout="wide", page_title="Regime Backtest v4")
 
 st.markdown("""
 <style>
@@ -66,10 +70,10 @@ st.markdown(
     'font-family:\'DM Mono\',monospace;margin-bottom:4px;">Macro Regime Monitor</div>'
     '<h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-0.02em;color:#E8E8E8;">'
     'Regime Backtest <span style="font-size:14px;color:#555;font-weight:400;">'
-    '— GL Framework v3</span></h1>'
+    'v4 — Clean Build</span></h1>'
     '<p style="margin:6px 0 24px;font-size:12px;color:#555;">'
-    'Crisis-aware monetary neutralization · Fast COVID reaction · '
-    'Dot-com equity signal · 2022 recovery exit</p>',
+    '2019–Present · GL + Dollar + Rate Shock + Credit + Monetary + Equity + Oil · '
+    'No mode-switching · Simple weighted composite</p>',
     unsafe_allow_html=True
 )
 
@@ -79,8 +83,7 @@ st.markdown(
 
 fred_key = st.secrets.get("FRED_API_KEY", None)
 if not fred_key:
-    fred_key = st.text_input("Enter your FRED API Key", type="password",
-                              placeholder="fred.stlouisfed.org/docs/api/api_key.html")
+    fred_key = st.text_input("Enter your FRED API Key", type="password")
 if not fred_key:
     st.markdown(
         '<div style="padding:20px;border-radius:12px;background:rgba(255,255,255,0.02);'
@@ -89,50 +92,60 @@ if not fred_key:
     )
     st.stop()
 
-START = "2018-01-01"   # 2018 start gives 12-month MA runway by Jan 2019
+# Fetch from 2016 for MA warmup, display from 2019
+FETCH_START  = "2016-01-01"
+DISPLAY_START = "2019-01-01"
 END   = date.today().strftime("%Y-%m-%d")
 TODAY = str(date.today())
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA FETCH
+# FRED SERIES — lean set, all monthly or convertible
 # ─────────────────────────────────────────────────────────────────────────────
 
-FRED_SERIES = {
-    "walcl":       "WALCL",
-    "ecb_assets":  "ECBASSETSW",
-    "boj_assets":  "JPNASSETS",
-    "m2":          "M2SL",
-    "tga":         "WTREGEN",
-    "rrp":         "RRPONTSYD",
-    "dxy_proxy":   "DTWEXBGS",
-    "effr":        "FEDFUNDS",
-    "t2y":         "DGS2",
-    "t10y2y":      "T10Y2Y",
-    "tips10y":     "DFII10",
-    "hy_spread":   "BAMLH0A0HYM2",
-    "ig_spread":   "BAMLC0A0CM",
-    "nfci":        "NFCI",
-    "govt_spend":  "FGEXPND",
-    "ism_mfg":     "NAPM",
-    "lei":         "USSLIND",
-    "unrate":      "UNRATE",
-    "cpi":         "CPIAUCSL",
-    "core_pce":    "PCEPILFE",
-    "breakeven5y": "T5YIE",
-    "icsa":        "ICSA",
-    "retail":      "RSAFS",
+FRED_SERIES_V4 = {
+    # Global Liquidity
+    "walcl":       "WALCL",         # Fed BS (weekly → monthly)
+    "ecb_assets":  "ECBASSETSW",    # ECB BS
+    "boj_assets":  "JPNASSETS",     # BOJ BS
+    "m2":          "M2SL",          # US M2
+    "tga":         "WTREGEN",       # TGA
+    "rrp":         "RRPONTSYD",     # Reverse repo
+    # Dollar
+    "dxy_proxy":   "DTWEXBGS",      # Trade-weighted USD (daily → monthly)
+    # Rate shock / monetary
+    "t2y":         "DGS2",          # 2Y Treasury (daily → monthly)
+    "effr":        "FEDFUNDS",      # Fed funds rate
+    "tips10y":     "DFII10",        # 10Y TIPS real yield
+    "t10y2y":      "T10Y2Y",        # Yield curve
+    "nfci":        "NFCI",          # Financial conditions index
+    # Credit stress
+    "hy_spread":   "BAMLH0A0HYM2",  # HY OAS spread (daily → monthly)
+    "ig_spread":   "BAMLC0A0CM",    # IG OAS spread
+    # Economic activity
+    "ism_mfg":     "NAPM",          # ISM Manufacturing PMI
+    "lei":         "USSLIND",       # Conference Board LEI
+    "icsa":        "ICSA",          # Jobless claims (weekly → monthly)
+    "unrate":      "UNRATE",        # Unemployment rate
+    # Inflation
+    "core_pce":    "PCEPILFE",      # Core PCE
+    "breakeven5y": "T5YIE",         # 5Y breakeven inflation
+    "cpi":         "CPIAUCSL",      # CPI
+    # Oil (Luke explicitly mentions in transcript 2)
+    "oil":         "DCOILWTICO",    # WTI crude oil price
 }
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_fred(today_str, api_key):
+def fetch_v4(today_str, api_key):
+    """Fresh fetch with new function name to bust old cache."""
     from fredapi import Fred
     fred   = Fred(api_key=api_key)
     frames = {}
     failed = []
-    for name, sid in FRED_SERIES.items():
+    for name, sid in FRED_SERIES_V4.items():
         try:
-            s = fred.get_series(sid, observation_start=START, observation_end=END)
+            s = fred.get_series(sid, observation_start=FETCH_START,
+                                observation_end=END)
             s.index = pd.to_datetime(s.index).tz_localize(None)
             frames[name] = s
         except Exception:
@@ -143,13 +156,20 @@ def fetch_fred(today_str, api_key):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_market(today_str):
+def fetch_market_v4(today_str):
+    """Fresh fetch with new function name to bust old cache."""
     import yfinance as yf
     results = {}
     failed  = []
-    for name, ticker in {"sp500": "^GSPC", "dxy": "DX-Y.NYB", "bcom": "^BCOM"}.items():
+    tickers = {
+        "sp500": "^GSPC",
+        "dxy":   "DX-Y.NYB",
+        "bcom":  "^BCOM",
+        "oil_yf":"CL=F",     # WTI futures for oil momentum
+    }
+    for name, ticker in tickers.items():
         try:
-            raw = yf.download(ticker, start=START, end=END,
+            raw = yf.download(ticker, start=FETCH_START, end=END,
                               progress=False, auto_adjust=True)
             s = raw["Close"][ticker] if isinstance(raw.columns, pd.MultiIndex) \
                 else raw["Close"]
@@ -162,511 +182,392 @@ def fetch_market(today_str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COMPONENT SCORES
+# EIGHT CLEAN SCORING FUNCTIONS
+# Each returns -100 to +100. No dependencies between them.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def pct_chg(s, n): return s.pct_change(n) * 100
+def pct(s, n): return s.pct_change(n) * 100
 
 
-def score_credit_stress(m):
+def sig_global_liquidity(m):
     """
-    Credit stress: level + momentum of HY and IG spreads.
-    This is the primary crisis detector.
-    HIGH WEIGHT when in crisis. Normal weight otherwise.
+    Global Liquidity Rate of Change.
+    Luke: "GL operates on 3-month lag to markets."
+    "GL stalled → removed tailwind."
+    "GL recovered Oct 2022 → drove markets higher."
+    Combined Fed+ECB+BOJ+M2+TGA+RRP.
     """
-    cs = pd.Series(0.0, index=m.index)
+    s = pd.Series(0.0, index=m.index)
 
+    # Fed: 3M ROC. Crisis QE (1M >8%) = neutralized.
+    fed_3m = pct(m["walcl"], 3)
+    fed_1m = pct(m["walcl"], 1)
+    crisis_qe = fed_1m > 8
+    fed_score = np.where(fed_3m > 5, 40, np.where(fed_3m > 2.5, 25,
+                np.where(fed_3m > 0.5, 10, np.where(fed_3m > -0.5, -5,
+                np.where(fed_3m > -2.5, -25, np.where(fed_3m > -5, -40, -55))))))
+    s += pd.Series(np.where(crisis_qe, 0, fed_score), index=m.index)
+
+    # ECB
+    if "ecb_assets" in m.columns and not m["ecb_assets"].isna().all():
+        ecb_3m = pct(m["ecb_assets"], 3)
+        ecb_1m = pct(m["ecb_assets"], 1)
+        ecb_score = np.where(ecb_3m > 3, 20, np.where(ecb_3m > 1, 10,
+                    np.where(ecb_3m > -1, -5, np.where(ecb_3m > -3, -15, -25))))
+        s += pd.Series(np.where(ecb_1m > 6, 0, ecb_score), index=m.index)
+
+    # BOJ
+    if "boj_assets" in m.columns and not m["boj_assets"].isna().all():
+        boj_3m  = pct(m["boj_assets"], 3)
+        boj_yoy = pct(m["boj_assets"], 12)
+        s += np.where(boj_3m > 3, 15, np.where(boj_3m > 1, 7,
+             np.where(boj_3m > -1, -4, np.where(boj_3m > -3, -12, -20))))
+        # BOJ hiking = carry trade unwind = extra penalty
+        s += np.where(boj_yoy < -5, -15, np.where(boj_yoy < -2, -8, 0))
+
+    # M2
+    m2_yoy = pct(m["m2"], 12)
+    m2_3m  = pct(m["m2"], 3)
+    s += np.where(m2_yoy > 10, 20, np.where(m2_yoy > 5, 12,
+         np.where(m2_yoy > 2, 4, np.where(m2_yoy > -1, -5,
+         np.where(m2_yoy > -4, -15, -25)))))
+    s += np.where(m2_3m > 1.5, 8, np.where(m2_3m > 0, 3,
+         np.where(m2_3m < -1.5, -8, np.where(m2_3m < 0, -3, 0))))
+
+    # TGA: drawdown = inject = bullish; refill = drain = bearish
+    if "tga" in m.columns:
+        tga_3m = m["tga"].diff(3)
+        s += np.where(tga_3m < -200, 20, np.where(tga_3m < -100, 11,
+             np.where(tga_3m < -50, 5, np.where(tga_3m > 200, -20,
+             np.where(tga_3m > 100, -11, np.where(tga_3m > 50, -5, 0))))))
+
+    # RRP: declining = releasing liquidity = bullish
+    if "rrp" in m.columns:
+        rrp_3m = m["rrp"].diff(3).fillna(0)
+        s += np.where(rrp_3m < -300, 18, np.where(rrp_3m < -100, 9,
+             np.where(rrp_3m < -50, 4, np.where(rrp_3m > 300, -15,
+             np.where(rrp_3m > 100, -8, np.where(rrp_3m > 50, -3, 0))))))
+
+    return s.clip(-100, 100)
+
+
+def sig_dollar(m, market_data):
+    """
+    Dollar direction.
+    Luke: "Weak dollar = risk assets surge substantially."
+    "Strong dollar = siphons global liquidity."
+    Uses true DXY + 200DMA position (Luke's visual signal from transcript 2).
+    """
+    s = pd.Series(0.0, index=m.index)
+    dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
+    if dxy_col not in m.columns:
+        return s
+
+    dxy    = m[dxy_col]
+    dxy_3m = pct(dxy, 3)
+    dxy_6m = pct(dxy, 6)
+    dxy_1m = pct(dxy, 1)
+
+    # 3M direction — primary
+    s += np.where(dxy_3m < -5,   40, np.where(dxy_3m < -3,  28,
+         np.where(dxy_3m < -1,   16, np.where(dxy_3m < -0.3, 6,
+         np.where(dxy_3m <  0.3,  0, np.where(dxy_3m <  1.5,-14,
+         np.where(dxy_3m <  3,  -26, np.where(dxy_3m <  5,  -36,
+                                               -45))))))))
+
+    # 6M trend confirms
+    s += np.where(dxy_6m < -8,  18, np.where(dxy_6m < -4,  10,
+         np.where(dxy_6m < -1,   4, np.where(dxy_6m < 1,    0,
+         np.where(dxy_6m < 4,  -10, np.where(dxy_6m < 8,  -16, -22))))))
+
+    # 200DMA position (Luke transcript 2: "dollar back above 200DMA = bearish")
+    dxy_200ma = dxy.rolling(12).mean()  # 12-month ≈ 200-day on monthly data
+    pct_vs_200 = (dxy / dxy_200ma - 1) * 100
+    s += np.where(pct_vs_200 < -3,  14, np.where(pct_vs_200 < -1,  7,
+         np.where(pct_vs_200 < 0,    2, np.where(pct_vs_200 < 1,   -5,
+         np.where(pct_vs_200 < 3,  -12, np.where(pct_vs_200 < 5, -18, -24))))))
+
+    # Peak detection: DXY turning down from 6M high = recovery signal
+    dxy_6m_max = dxy.rolling(6).max()
+    turning     = dxy < dxy_6m_max * 0.97
+    at_peak     = dxy >= dxy_6m_max * 0.99
+    s += pd.Series(np.where(turning,   12,
+                   np.where(at_peak,   -8, 0)), index=m.index)
+
+    return s.clip(-100, 100)
+
+
+def sig_rate_shock(m):
+    """
+    Rate shock: 2Y yield 4M change.
+    KEY insight: fires BEFORE credit blows up.
+    Jan 2022 → 2Y surged 70bps in 4M BEFORE HY spreads widened.
+    This is the earliest 2022 warning signal.
+    """
+    s = pd.Series(0.0, index=m.index)
+    if "t2y" not in m.columns:
+        return s
+
+    t2y     = m["t2y"]
+    t2y_4m  = t2y.diff(4)   # 4-month change
+    t2y_2m  = t2y.diff(2)   # 2-month acceleration
+
+    # 4M rate shock — primary
+    s += np.where(t2y_4m > 1.75, -60, np.where(t2y_4m > 1.25, -45,
+         np.where(t2y_4m > 0.75, -30, np.where(t2y_4m > 0.45, -18,
+         np.where(t2y_4m > 0.15, -8,  np.where(t2y_4m < -1.25,  45,
+         np.where(t2y_4m < -0.75, 30, np.where(t2y_4m < -0.35,  18,
+         np.where(t2y_4m < -0.1,   8, 0)))))))))
+
+    # 2M acceleration
+    s += np.where(t2y_2m > 0.75, -22, np.where(t2y_2m > 0.4, -12,
+         np.where(t2y_2m > 0.15, -5,  np.where(t2y_2m < -0.5,  20,
+         np.where(t2y_2m < -0.25, 10, np.where(t2y_2m < -0.1,   5, 0))))))
+
+    # Fed hike/cut pace
+    effr_6m = m["effr"].diff(6)
+    s += np.where(effr_6m > 2.5, -30, np.where(effr_6m > 1.5, -20,
+         np.where(effr_6m > 0.75,-10, np.where(effr_6m < -1.0,  25,
+         np.where(effr_6m < -0.5, 15, 0)))))
+
+    return s.clip(-100, 100)
+
+
+def sig_credit(m):
+    """
+    Credit stress: HY spread level + speed.
+    Crisis detector — high HY = systemic risk.
+    Also: rapidly tightening spreads = strong recovery signal.
+    """
+    s = pd.Series(0.0, index=m.index)
     if "hy_spread" not in m.columns:
-        return cs
+        return s
 
-    hy        = m["hy_spread"]
-    hy_3m     = hy.diff(3)
-    hy_3m_max = hy.rolling(3).max()
-    hy_6m_max = hy.rolling(6).max()
+    hy     = m["hy_spread"]
+    hy_3m  = hy.diff(3)
+    hy_max = hy.rolling(4).max()
 
-    # Level — granular thresholds
-    cs += np.where(hy < 275,   35,
-          np.where(hy < 325,   25,
-          np.where(hy < 375,   15,
-          np.where(hy < 425,    8,
-          np.where(hy < 475,    2,
-          np.where(hy < 525,   -5,
-          np.where(hy < 600,  -18,
-          np.where(hy < 750,  -35,
-          np.where(hy < 1000, -55,
-                               -70)))))))))
+    # Level
+    s += np.where(hy < 275,  40, np.where(hy < 325,  28,
+         np.where(hy < 375,  16, np.where(hy < 425,   6,
+         np.where(hy < 475,  -2, np.where(hy < 550,  -14,
+         np.where(hy < 650,  -30, np.where(hy < 800, -50,
+         np.where(hy < 1100,-65,                      -75)))))))))
 
-    # Speed — rapid widening = crisis building
-    cs += np.where(hy_3m >  300, -35,
-          np.where(hy_3m >  200, -25,
-          np.where(hy_3m >  100, -15,
-          np.where(hy_3m >   50,  -8,
-          np.where(hy_3m < -200,  25,
-          np.where(hy_3m < -100,  15,
-          np.where(hy_3m <  -50,   8, 0)))))))
+    # Speed
+    s += np.where(hy_3m > 300, -40, np.where(hy_3m > 200, -28,
+         np.where(hy_3m > 100, -16, np.where(hy_3m > 50,   -8,
+         np.where(hy_3m < -200,  30, np.where(hy_3m < -100, 18,
+         np.where(hy_3m < -50,    9, 0)))))))
 
-    # Peak turning — spreads falling from recent high = recovery
-    turning  = hy < hy_3m_max * 0.88
-    elevated = hy > 450
-    at_peak  = hy >= hy_3m_max * 0.98
-    cs += pd.Series(np.where(turning & elevated,   20,
-                   np.where(turning & ~elevated,   10,
-                   np.where(at_peak & elevated,   -10, 0))),
-                   index=m.index)
+    # Peak turning
+    turn = hy < hy_max * 0.88
+    high = hy > 450
+    peak = hy >= hy_max * 0.98
+    s += pd.Series(np.where(turn & high,  22,
+                   np.where(turn & ~high, 10,
+                   np.where(peak & high, -10, 0))), index=m.index)
 
-    # IG spreads (early mover)
+    # IG confirms
     if "ig_spread" in m.columns:
         ig    = m["ig_spread"]
         ig_3m = ig.diff(3)
-        cs += np.where(ig < 0.8,   12,
-              np.where(ig < 1.0,    7,
-              np.where(ig < 1.3,    2,
-              np.where(ig < 1.8,   -6,
-              np.where(ig < 2.5,  -16,
-              np.where(ig < 3.5,  -28,
-                                   -40))))))
-        cs += np.where(ig_3m < -0.4,   10,
-              np.where(ig_3m < -0.2,    5,
-              np.where(ig_3m >  0.5,  -12,
-              np.where(ig_3m >  0.3,   -6, 0))))
+        s += np.where(ig < 0.8,  14, np.where(ig < 1.0,  7,
+             np.where(ig < 1.3,   2, np.where(ig < 1.8,  -8,
+             np.where(ig < 2.5, -18, np.where(ig < 3.5, -30, -45))))))
+        s += np.where(ig_3m < -0.4, 10, np.where(ig_3m > 0.5, -12, 0))
 
-    return cs.clip(-100, 100)
+    return s.clip(-100, 100)
 
 
-def score_global_liquidity(m):
-    """GL: rate of change of combined CB balance sheets + plumbing"""
-    gl = pd.Series(0.0, index=m.index)
-
-    fed_3m  = pct_chg(m["walcl"], 3)
-    fed_1m  = pct_chg(m["walcl"], 1)
-    fed_yoy = pct_chg(m["walcl"], 12)
-
-    # Crisis QE = reactive, neutralize
-    crisis_qe  = fed_1m > 8
-    normal_fed = np.where(fed_3m > 4,   22,
-                 np.where(fed_3m > 2,   14,
-                 np.where(fed_3m > 0.5,  6,
-                 np.where(fed_3m > -0.5,-4,
-                 np.where(fed_3m > -2, -14,
-                 np.where(fed_3m > -4, -22,
-                                       -30))))))
-    gl += pd.Series(np.where(crisis_qe, 0, normal_fed), index=m.index)
-
-    if "ecb_assets" in m.columns and not m["ecb_assets"].isna().all():
-        ecb_3m = pct_chg(m["ecb_assets"], 3)
-        ecb_1m = pct_chg(m["ecb_assets"], 1)
-        crisis_ecb = ecb_1m > 6
-        ecb_n  = np.where(ecb_3m > 3,  12, np.where(ecb_3m > 1, 6,
-                 np.where(ecb_3m > -1, -4, np.where(ecb_3m > -3,-10,-15))))
-        gl += pd.Series(np.where(crisis_ecb, 0, ecb_n), index=m.index)
-
-    if "boj_assets" in m.columns and not m["boj_assets"].isna().all():
-        boj_3m  = pct_chg(m["boj_assets"], 3)
-        boj_yoy = pct_chg(m["boj_assets"], 12)
-        gl += np.where(boj_3m > 3, 10, np.where(boj_3m > 1, 5,
-              np.where(boj_3m > -1, -3, np.where(boj_3m > -3, -8, -12))))
-        gl += np.where(boj_yoy < -5, -12, np.where(boj_yoy < -2, -6, 0))
-
-    m2_yoy = pct_chg(m["m2"], 12)
-    m2_3m  = pct_chg(m["m2"], 3)
-    gl += np.where(m2_yoy > 10, 14, np.where(m2_yoy > 5, 8,
-          np.where(m2_yoy > 2, 3, np.where(m2_yoy > -1, -3,
-          np.where(m2_yoy > -4, -10, -18)))))
-    gl += np.where(m2_3m > 1.5, 6, np.where(m2_3m > 0, 2,
-          np.where(m2_3m < -1.5, -6, np.where(m2_3m < 0, -2, 0))))
-
-    if "tga" in m.columns:
-        tga_3m = m["tga"].diff(3)
-        gl += np.where(tga_3m < -200, 16, np.where(tga_3m < -100, 9,
-              np.where(tga_3m < -50, 4, np.where(tga_3m > 200, -16,
-              np.where(tga_3m > 100, -9, np.where(tga_3m > 50, -4, 0))))))
-
-    if "rrp" in m.columns:
-        rrp_3m = m["rrp"].diff(3).fillna(0)
-        gl += np.where(rrp_3m < -300, 14, np.where(rrp_3m < -100, 7,
-              np.where(rrp_3m < -50, 3, np.where(rrp_3m > 300, -12,
-              np.where(rrp_3m > 100, -6, np.where(rrp_3m > 50, -3, 0))))))
-
-    return gl.clip(-100, 100)
-
-
-def score_dollar(m, market_data):
-    """Dollar direction: weak = bullish, strong = bearish"""
-    d = pd.Series(0.0, index=m.index)
-    dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
-    if dxy_col in m.columns:
-        dxy    = m[dxy_col]
-        dxy_3m = pct_chg(dxy, 3)
-        dxy_6m = pct_chg(dxy, 6)
-        d += np.where(dxy_3m < -5,  35, np.where(dxy_3m < -3,  24,
-             np.where(dxy_3m < -1,  14, np.where(dxy_3m < -0.3, 6,
-             np.where(dxy_3m <  0.3, 0, np.where(dxy_3m <  1.5,-12,
-             np.where(dxy_3m <  3, -22, np.where(dxy_3m <  5, -30,
-                                                              -38))))))))
-        d += np.where(dxy_6m < -8, 14, np.where(dxy_6m < -4, 8,
-             np.where(dxy_6m < -1, 3, np.where(dxy_6m < 1, 0,
-             np.where(dxy_6m < 4, -8, np.where(dxy_6m < 8, -14, -18))))))
-    return d.clip(-100, 100)
-
-
-def score_monetary_policy(m, hy_spread_series):
+def sig_monetary(m):
     """
-    FIX 1: When HY spreads > 550bps (credit crisis), rate cuts are
-    REACTIVE — neutralize the bullish rate cut signal.
-    The Fed is fighting the fire. That's not a bullish macro signal.
-
-    FIX 4: When in 2022-style tightening BUT spreads are recovering,
-    use rate PACE (acceleration) rather than absolute direction.
+    Monetary policy tone.
+    Note: rate cuts DURING credit crisis (HY>600) neutralized —
+    they are reactive not bullish.
     """
-    mp = pd.Series(0.0, index=m.index)
-
-    # Is this a credit crisis environment?
-    hy           = hy_spread_series
-    credit_crisis = hy > 550  # GFC, COVID, dot-com late stage
+    s = pd.Series(0.0, index=m.index)
 
     effr_3m = m["effr"].diff(3)
-    effr_1m = m["effr"].diff(1)
+    hy_in_crisis = m["hy_spread"] > 600 if "hy_spread" in m.columns \
+                   else pd.Series(False, index=m.index)
 
-    # Raw monetary signal
-    raw_mp = np.where(effr_3m < -0.5,  24,
-             np.where(effr_3m < -0.25, 14,
-             np.where(effr_3m <  0,     4,
-             np.where(effr_3m <  0.25, -6,
-             np.where(effr_3m <  0.5, -18,
-             np.where(effr_3m <  1.0, -28,
-                                       -38))))))
+    raw_effr = np.where(effr_3m < -0.5,  28, np.where(effr_3m < -0.25, 16,
+               np.where(effr_3m <  0,     5, np.where(effr_3m <  0.25, -8,
+               np.where(effr_3m <  0.5, -20, np.where(effr_3m <  1.0, -32,
+                                                                        -42))))))
+    s += pd.Series(np.where(hy_in_crisis & (effr_3m < 0), 0, raw_effr), index=m.index)
 
-    # FIX 1: During credit crisis, neutralize the easing signal
-    # (cuts are reactive) but keep the tightening signal if any
-    adj_mp = np.where(
-        credit_crisis & (effr_3m < 0),
-        0,          # neutralize cuts during credit crisis
-        raw_mp      # keep normal signal otherwise
-    )
-    mp += pd.Series(adj_mp, index=m.index)
-
-    # 2Y yield — forward market expectations
-    if "t2y" in m.columns:
-        t2y_3m = m["t2y"].diff(3)
-        raw_t2y = np.where(t2y_3m < -0.75,  18, np.where(t2y_3m < -0.35, 10,
-                  np.where(t2y_3m < -0.1,    4, np.where(t2y_3m <  0.35,  -6,
-                  np.where(t2y_3m <  0.75, -14,                            -22)))))
-        # During crisis: falling 2Y = rate cuts coming = slightly positive
-        # (different from Fed already cutting — this is forward-looking)
-        mp += pd.Series(raw_t2y * 0.7, index=m.index)  # dampen slightly
-
-    # Real rates (TIPS)
+    # TIPS real rate level
     if "tips10y" in m.columns:
         tips    = m["tips10y"]
         tips_3m = tips.diff(3)
-        mp += np.where(tips < -1.5, 12, np.where(tips < -0.5, 6,
-              np.where(tips <  0, 2, np.where(tips < 0.5, -4,
-              np.where(tips <  1.5, -10, -16)))))
-        mp += np.where(tips_3m < -0.5, 8, np.where(tips_3m < -0.2, 4,
-              np.where(tips_3m > 0.5, -10, np.where(tips_3m > 0.2, -5, 0))))
+        s += np.where(tips < -1.5, 16, np.where(tips < -0.5,  9,
+             np.where(tips <  0,    3, np.where(tips <  0.5,  -5,
+             np.where(tips <  1.5,-12,                         -20)))))
+        s += np.where(tips_3m < -0.5,  10, np.where(tips_3m > 0.5, -12, 0))
 
     # Yield curve
-    yc = m["t10y2y"]
-    mp += np.where(yc > 1.5, 10, np.where(yc > 0.5, 5,
-          np.where(yc > 0, 2, np.where(yc > -0.5, -4,
-          np.where(yc > -1.0, -10, -15)))))
+    if "t10y2y" in m.columns:
+        yc = m["t10y2y"]
+        s += np.where(yc > 1.5,  12, np.where(yc > 0.5,  6,
+             np.where(yc > 0,     2, np.where(yc > -0.5, -5,
+             np.where(yc > -1.0,-12,                      -18)))))
 
-    # Financial conditions
+    # NFCI
     if "nfci" in m.columns:
         nf = m["nfci"]
-        mp += np.where(nf < -0.5, 8, np.where(nf < -0.1, 4,
-              np.where(nf < 0.2, 0, np.where(nf < 0.5, -6, -12))))
+        s += np.where(nf < -0.5,  10, np.where(nf < -0.1,  5,
+             np.where(nf <  0.2,   0, np.where(nf <  0.5,  -7, -14))))
 
-    return mp.clip(-100, 100)
+    return s.clip(-100, 100)
 
 
-def score_equity_trend(m, market_data):
+def sig_equity_trend(m, market_data):
     """
-    FIX 3: Dot-com early warning.
-    S&P 500 price momentum as a regime signal.
-    Equity bear markets that don't start with a credit crisis
-    (like dot-com 2000, some 2018 episodes) need a price-based signal.
-
-    S&P 500 below its 12-month MA AND declining = Risk-Off context.
-    Also: ISM + LEI both declining = growth warning.
+    Equity price trend — Luke's visual signals from transcript 2:
+    "50DMA = primary signal. Nothing good happens below 50DMA."
+    "Bull market support band (20/21 week EMA) = regime signal."
+    Using price vs 12M and 6M MAs as monthly proxies.
     """
-    eq = pd.Series(0.0, index=m.index)
+    s = pd.Series(0.0, index=m.index)
 
-    # S&P 500 vs 12-month moving average
-    if "sp500" in m.columns:
-        sp     = m["sp500"]
-        sp_12m = sp.rolling(12).mean()
-        sp_6m  = sp.rolling(6).mean()
-        sp_pct = (sp / sp_12m - 1) * 100
+    sp = m.get("sp500", None)
+    if sp is None or sp.isna().all():
+        # Try to build from ISM + LEI
+        if "ism_mfg" in m.columns:
+            pmi = m["ism_mfg"]
+            s += np.where(pmi > 55, 20, np.where(pmi > 52, 12,
+                 np.where(pmi > 50,  4, np.where(pmi > 48, -8,
+                 np.where(pmi > 45,-18,                    -30)))))
+        lei_6m = pct(m["lei"], 6)
+        s += np.where(lei_6m > 2, 15, np.where(lei_6m > 0.5,  8,
+             np.where(lei_6m > -0.5, 0, np.where(lei_6m > -2,-10, -18))))
+        return s.clip(-100, 100)
 
-        # Below 12M MA = trend is bearish
-        eq += np.where(sp_pct >  10,  18,
-              np.where(sp_pct >   5,  12,
-              np.where(sp_pct >   0,   5,
-              np.where(sp_pct >  -5,  -8,
-              np.where(sp_pct > -10, -18,
-                                     -30)))))
+    ma12 = sp.rolling(12).mean()  # ≈ 200DMA
+    ma6  = sp.rolling(6).mean()   # ≈ 50DMA
+    ma3  = sp.rolling(3).mean()
 
-        # 6M momentum (rate of change)
-        sp_6m_roc = pct_chg(sp, 6)
-        eq += np.where(sp_6m_roc >  15,  12,
-              np.where(sp_6m_roc >   5,   6,
-              np.where(sp_6m_roc >   0,   2,
-              np.where(sp_6m_roc > -10,  -8,
-              np.where(sp_6m_roc > -20, -18,
-                                        -28)))))
+    # Price vs 12M MA (200DMA proxy)
+    vs_200 = (sp / ma12 - 1) * 100
+    s += np.where(vs_200 > 12,  25, np.where(vs_200 > 6,  16,
+         np.where(vs_200 > 2,    8, np.where(vs_200 > 0,   2,
+         np.where(vs_200 > -5, -10, np.where(vs_200 > -12,-22,
+                                              -35))))))
 
-    # ISM Manufacturing trend
-    if "ism_mfg" in m.columns:
-        pmi    = m["ism_mfg"]
-        pmi_3m = pmi.diff(3)
-        eq += np.where(pmi > 55,  12, np.where(pmi > 52, 7,
-              np.where(pmi > 50,  2, np.where(pmi > 48, -5,
-              np.where(pmi > 45, -12, -22)))))
-        eq += np.where(pmi_3m > 3, 6, np.where(pmi_3m > 1, 3,
-              np.where(pmi_3m < -3, -6, np.where(pmi_3m < -1, -3, 0))))
+    # 6M momentum (price trend direction)
+    sp_6m = pct(sp, 6)
+    s += np.where(sp_6m > 15,  18, np.where(sp_6m > 8,  10,
+         np.where(sp_6m > 2,    4, np.where(sp_6m > -5,  -6,
+         np.where(sp_6m > -15,-15,                        -25)))))
 
-    # Conference Board LEI
-    lei_6m = pct_chg(m["lei"], 6)
-    eq += np.where(lei_6m > 2, 10, np.where(lei_6m > 0.5, 5,
-          np.where(lei_6m > -0.5, 0, np.where(lei_6m > -2, -8, -15))))
+    # 50DMA vs 200DMA (golden/death cross)
+    cross = (ma6 / ma12 - 1) * 100
+    s += np.where(cross > 3,  14, np.where(cross > 1,  7,
+         np.where(cross > 0,   2, np.where(cross < -2,-14,
+         np.where(cross < -1,  -7, 0)))))
 
-    # Jobless claims trend
-    if "icsa" in m.columns:
-        ic_3m = pct_chg(m["icsa"], 3)
-        eq += np.where(ic_3m < -8, 8, np.where(ic_3m < -3, 4,
-              np.where(ic_3m > 20, -16, np.where(ic_3m > 10, -8,
-              np.where(ic_3m > 5, -4, 0)))))
-
-    return eq.clip(-100, 100)
+    return s.clip(-100, 100)
 
 
-def score_rate_shock(m):
+def sig_oil_inflation(m, market_data):
     """
-    DEDICATED RATE SHOCK SIGNAL.
-    Simulation shows Jan 2022 composite was -4.5 (just missed Risk-Off)
-    because HY spreads were only 280bps (very tight) and equity was
-    still above MA. But the 2Y yield was surging 70bps/month.
+    Oil/Inflation risk signal.
+    From Luke transcript 2: "If oil stays elevated it's inflationary.
+    When you have inflation back in the mix, it complicates what the
+    central banks can do in terms of lowering interest rates."
+    "Oil is the wild card right now."
 
-    2Y yield 4-month change captures rate shock BEFORE credit blows up.
-    This is the earliest possible warning for rate-driven bears.
-    Also catches the 2022 entire cycle from the very start.
+    High oil + rising inflation = Fed can't cut = bearish for risk assets.
+    Low oil + falling inflation = Fed can cut = bullish.
     """
-    rs = pd.Series(0.0, index=m.index)
+    s = pd.Series(0.0, index=m.index)
 
-    if "t2y" not in m.columns:
-        return rs
+    # Oil price momentum
+    oil_col = None
+    if "oil_yf" in m.columns and not m["oil_yf"].isna().all():
+        oil_col = "oil_yf"
+    elif "oil" in m.columns and not m["oil"].isna().all():
+        oil_col = "oil"
 
-    t2y_4m = m["t2y"].diff(4)   # 4-month change — sweet spot
-    t2y_2m = m["t2y"].diff(2)   # 2-month for acceleration
+    if oil_col:
+        oil    = m[oil_col]
+        oil_3m = pct(oil, 3)
+        oil_6m = pct(oil, 6)
+        oil_lvl = oil / oil.rolling(12).mean()  # vs 12M avg
 
-    # 4-month rate shock — primary signal
-    rs += np.where(t2y_4m > 1.5,  -55,   # massive tightening (2022 mid-year)
-          np.where(t2y_4m > 1.0,  -40,   # strong shock (early 2022)
-          np.where(t2y_4m > 0.6,  -25,   # building shock (Jan 2022)
-          np.where(t2y_4m > 0.35, -12,   # early warning
-          np.where(t2y_4m > 0.1,   -4,
-          np.where(t2y_4m < -1.0,  35,   # massive easing = recovery signal
-          np.where(t2y_4m < -0.5,  22,
-          np.where(t2y_4m < -0.25, 12,
-          np.where(t2y_4m < -0.1,   5, 0)))))))))
+        # Rapid oil surge = inflation risk = bearish
+        s += np.where(oil_3m > 25, -30, np.where(oil_3m > 15, -18,
+             np.where(oil_3m > 8,  -8,  np.where(oil_3m < -20,  18,
+             np.where(oil_3m < -10,  9, np.where(oil_3m < -5,   4, 0))))))
 
-    # 2-month acceleration — if shocking faster recently
-    rs += np.where(t2y_2m > 0.75, -20,
-          np.where(t2y_2m > 0.4,  -10,
-          np.where(t2y_2m < -0.5,  15,
-          np.where(t2y_2m < -0.25,  8, 0))))
+        # Oil level vs average (persistent high = sustained inflation)
+        s += np.where(oil_lvl > 1.3, -20, np.where(oil_lvl > 1.15, -10,
+             np.where(oil_lvl > 0.85,  0, np.where(oil_lvl > 0.70,   8,
+                                                                      15))))
 
-    # Fed funds rate shock (actual hikes)
-    effr_6m = m["effr"].diff(6)
-    rs += np.where(effr_6m > 2.5,  -30,
-          np.where(effr_6m > 1.5,  -20,
-          np.where(effr_6m > 0.75, -10,
-          np.where(effr_6m < -1.0,  20,
-          np.where(effr_6m < -0.5,  10, 0)))))
+    # Inflation expectations — when rising = Fed constrained
+    if "breakeven5y" in m.columns:
+        be     = m["breakeven5y"]
+        be_3m  = be.diff(3)
+        be_lvl = be
+        # Level: above 2.5% = hot = headwind
+        s += np.where(be_lvl > 3.0, -20, np.where(be_lvl > 2.5, -10,
+             np.where(be_lvl > 2.0,   0, np.where(be_lvl > 1.5,   5,
+                                                                   10))))
+        # Direction
+        s += np.where(be_3m > 0.4, -15, np.where(be_3m > 0.15, -7,
+             np.where(be_3m < -0.3,  12, np.where(be_3m < -0.1,  5, 0))))
 
-    return rs.clip(-100, 100)
+    # Core PCE vs target
+    if "core_pce" in m.columns:
+        pce = pct(m["core_pce"], 12)
+        s += np.where(pce > 4.0, -18, np.where(pce > 3.0, -10,
+             np.where(pce > 2.5,  -4, np.where(pce > 1.5,   4,
+                                                              8))))
 
-
-def score_dollar_peak(m, market_data):
-    """
-    DXY PEAK DETECTION — fixes 2022 exit timing.
-    Simulation shows Oct 2022 composite was -28 because DXY 3M was
-    still showing dollar strength even though DXY had peaked in Sep 2022.
-
-    Peak detection: when DXY is at 6-month high but starting to turn = exit.
-    When DXY falls from recent high by >2% = early recovery signal.
-    """
-    d = pd.Series(0.0, index=m.index)
-    dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
-    if dxy_col not in m.columns:
-        return d
-
-    dxy     = m[dxy_col]
-    dxy_3m  = dxy.pct_change(3) * 100
-    dxy_6m  = dxy.pct_change(6) * 100
-    dxy_1m  = dxy.pct_change(1) * 100
-
-    # 6-month high (rolling)
-    dxy_6m_max = dxy.rolling(6).max()
-    dxy_3m_max = dxy.rolling(3).max()
-
-    # DIRECTION — primary signal
-    d += np.where(dxy_3m < -5,   35,
-         np.where(dxy_3m < -3,   24,
-         np.where(dxy_3m < -1,   14,
-         np.where(dxy_3m < -0.3,  6,
-         np.where(dxy_3m <  0.3,  0,
-         np.where(dxy_3m <  1.5, -12,
-         np.where(dxy_3m <  3,   -22,
-         np.where(dxy_3m <  5,   -30,
-                                  -38))))))))
-
-    # 6M trend
-    d += np.where(dxy_6m < -8,   14,
-         np.where(dxy_6m < -4,    8,
-         np.where(dxy_6m < -1,    3,
-         np.where(dxy_6m < 1,     0,
-         np.where(dxy_6m < 4,    -8,
-         np.where(dxy_6m < 8,   -14,
-                                 -18))))))
-
-    # PEAK DETECTION — when DXY turning down from recent high
-    # This fires EARLIER than the 3M change signal
-    near_peak  = dxy >= dxy_6m_max * 0.99   # within 1% of 6M high
-    turning    = dxy < dxy_6m_max * 0.97    # down 3%+ from 6M high
-    strong_turn= dxy < dxy_6m_max * 0.94   # down 6%+ from 6M high
-
-    d += pd.Series(np.where(strong_turn,  18,    # clear reversal
-                   np.where(turning,       10,    # early reversal
-                   np.where(near_peak,    -8,     # at peak = still dangerous
-                            0))),
-                   index=m.index)
-
-    return d.clip(-100, 100)
-
-
-def score_fiscal(m):
-    """Fiscal policy: stimulus = bullish, austerity = bearish"""
-    fp = pd.Series(0.0, index=m.index)
-    if "govt_spend" in m.columns and not m["govt_spend"].isna().all():
-        gs_yoy = pct_chg(m["govt_spend"], 12)
-        fp += np.where(gs_yoy > 8, 18, np.where(gs_yoy > 4, 10,
-              np.where(gs_yoy > 1, 3, np.where(gs_yoy > -1, -3,
-              np.where(gs_yoy > -4, -10, -18)))))
-
-    m2_yoy    = pct_chg(m["m2"], 12)
-    walcl_yoy = pct_chg(m["walcl"], 12)
-    walcl_1m  = pct_chg(m["walcl"], 1)
-    crisis_qe = walcl_1m > 8
-    dual_bull = (m2_yoy > 4) & (walcl_yoy > 2) & ~crisis_qe
-    dual_bear = (m2_yoy < 0) & (walcl_yoy < 0)
-    fp += pd.Series(np.where(dual_bull, 18, np.where(dual_bear, -18, 0)), index=m.index)
-
-    pce_yoy = pct_chg(m["core_pce"], 12)
-    fp += np.where(pce_yoy > 4, -14, np.where(pce_yoy > 3, -7,
-          np.where(pce_yoy > 2.5, -2, np.where(pce_yoy < 1.5, -4, 4))))
-
-    return fp.clip(-100, 100)
+    return s.clip(-100, 100)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COMPOSITE + REGIME ENGINE
+# COMPOSITE + REGIME
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_composite(cs, gl, dxy, rs, mp, eq, fp, m):
+def build_v4(gl, dxy, rs, cr, mp, eq, oi):
     """
-    Context-aware weighting with rate shock as dedicated component.
-
-    Rate shock (rs) gets significant weight — it fires earliest in
-    rate-driven bears like 2022 before credit or equity signals move.
-
-    CRISIS MODE (HY > 600bps): CS dominates
-    RATE SHOCK MODE (2Y 4M change > 0.6%): rs + mp dominate
-    RECOVERY MODE: CS + eq + dxy peak drive exit
-    NORMAL MODE: GL primary (Luke's framework)
+    Weights: GL 22%, DXY 20%, RS 18%, CR 16%, MP 10%, EQ 8%, OI 6%
+    No mode switching. Simple weighted sum.
     """
-    hy        = m["hy_spread"] if "hy_spread" in m.columns else pd.Series(400, index=m.index)
-    hy_3m_max = hy.rolling(3).max()
-    t2y_4m    = m["t2y"].diff(4) if "t2y" in m.columns else pd.Series(0, index=m.index)
-
-    crisis_mode   = hy > 600
-    rate_shock_mode = (t2y_4m > 0.5) & ~crisis_mode   # fast rising rates, not in credit crisis
-    recovery_mode = (hy > 400) & (hy < hy_3m_max * 0.92) & ~crisis_mode
-    normal_mode   = ~crisis_mode & ~rate_shock_mode & ~recovery_mode
-
-    # Crisis: CS dominates
-    crisis_comp = (
-        cs  * 0.45 +
-        eq  * 0.20 +
-        dxy * 0.15 +
-        rs  * 0.10 +
-        mp  * 0.05 +
-        fp  * 0.05
-    )
-
-    # Rate shock: rs + mp dominate — catches early 2022
-    rate_shock_comp = (
-        rs  * 0.35 +
-        mp  * 0.25 +
+    return (
+        gl  * 0.22 +
         dxy * 0.20 +
-        cs  * 0.10 +
-        gl  * 0.05 +
-        fp  * 0.05
-    )
-
-    # Recovery: CS turning + equity trend + dollar reversing
-    recovery_comp = (
-        cs  * 0.25 +
-        dxy * 0.25 +   # dollar peak detection fires here
-        eq  * 0.20 +
-        gl  * 0.15 +
-        rs  * 0.10 +   # rate shock clearing = positive
-        fp  * 0.05
-    )
-
-    # Normal: GL primary (Luke)
-    normal_comp = (
-        gl  * 0.30 +
-        cs  * 0.20 +
-        dxy * 0.18 +
-        rs  * 0.12 +   # always watch rate shock
-        mp  * 0.12 +
-        eq  * 0.05 +
-        fp  * 0.03
-    )
-
-    composite = pd.Series(
-        np.where(crisis_mode,     crisis_comp,
-        np.where(rate_shock_mode, rate_shock_comp,
-        np.where(recovery_mode,   recovery_comp,
-                                  normal_comp))),
-        index=m.index
+        rs  * 0.18 +
+        cr  * 0.16 +
+        mp  * 0.10 +
+        eq  * 0.08 +
+        oi  * 0.06
     ).clip(-100, 100)
 
-    return composite
 
-
-def classify_regime(composite, hy_series, min_months_normal=2, min_months_crisis=1):
+def classify_v4(composite, hy_series, threshold=-12):
     """
-    FIX 2: Crisis signals (HY > 600) use 1-month minimum hold.
-    Normal signals use 2-month minimum hold.
-    This ensures COVID's fast spike is captured.
+    Risk-Off when 2-month smoothed composite < threshold.
+    1-month minimum hold when HY > 600 (crisis = fast flip).
+    2-month minimum hold otherwise.
     """
-    raw = pd.Series("Risk-On", index=composite.index)
-    raw[composite < -8] = "Risk-Off"
+    smoothed = composite.rolling(2, min_periods=1).mean()
+    raw      = pd.Series("Risk-On", index=smoothed.index)
+    raw[smoothed < threshold] = "Risk-Off"
 
-    hy         = hy_series.reindex(composite.index).ffill()
-    in_crisis  = hy > 600
-
+    hy      = hy_series.reindex(smoothed.index).ffill()
     final   = raw.copy()
     current = raw.iloc[0]
     dur     = 1
 
     for i in range(1, len(raw)):
-        proposed  = raw.iloc[i]
-        min_dur   = min_months_crisis if in_crisis.iloc[i] else min_months_normal
-
+        proposed = raw.iloc[i]
+        min_dur  = 1 if hy.iloc[i] > 600 else 2
         if proposed != current:
             if dur >= min_dur:
                 current = proposed
@@ -677,130 +578,131 @@ def classify_regime(composite, hy_series, min_months_normal=2, min_months_crisis
             dur += 1
         final.iloc[i] = current
 
-    return final
+    return final, smoothed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FETCH + COMPUTE
 # ─────────────────────────────────────────────────────────────────────────────
 
-pb = st.progress(0, text="Fetching FRED data...")
-monthly, fred_failed = fetch_fred(TODAY, fred_key)
+pb = st.progress(0, text="Fetching FRED data (fresh cache)...")
+monthly, fred_failed = fetch_v4(TODAY, fred_key)
 
-pb.progress(60, text="Fetching market data...")
-market_data, yf_failed = fetch_market(TODAY)
+pb.progress(55, text="Fetching market data (fresh cache)...")
+market_data, yf_failed = fetch_market_v4(TODAY)
 
-pb.progress(85, text="Computing regime scores...")
+pb.progress(82, text="Merging and computing scores...")
 
+# Merge market data into monthly
 for name, series in market_data.items():
     if series is not None and not series.empty:
         series.index = pd.to_datetime(series.index).tz_localize(None)
         monthly[name] = series.resample("ME").last().reindex(monthly.index).ffill()
 
-# Score all components
-cs_sc  = score_credit_stress(monthly)
-gl_raw = score_global_liquidity(monthly)
-dxy_sc = score_dollar_peak(monthly, market_data)   # upgraded with peak detection
-rs_sc  = score_rate_shock(monthly)                 # NEW: rate shock
-mp_sc  = score_monetary_policy(monthly, monthly.get("hy_spread",
-          pd.Series(400, index=monthly.index)))
-eq_sc  = score_equity_trend(monthly, market_data)
-fp_sc  = score_fiscal(monthly)
+# Score
+gl_s = sig_global_liquidity(monthly)
+dx_s = sig_dollar(monthly, market_data)
+rs_s = sig_rate_shock(monthly)
+cr_s = sig_credit(monthly)
+mp_s = sig_monetary(monthly)
+eq_s = sig_equity_trend(monthly, market_data)
+oi_s = sig_oil_inflation(monthly, market_data)
 
-# GL with 2-month lead (forward shift)
-gl_led = gl_raw.shift(-2)
+# GL shifted forward 2 months (leads markets per Luke)
+gl_led = gl_s.shift(-2)
 
-# Build composite
-composite = build_composite(cs_sc, gl_led, dxy_sc, rs_sc, mp_sc, eq_sc, fp_sc, monthly)
+composite = build_v4(gl_led, dx_s, rs_s, cr_s, mp_s, eq_s, oi_s)
 
-# Classify with variable minimum hold
 hy_series = monthly.get("hy_spread", pd.Series(400, index=monthly.index))
-regime    = classify_regime(composite, hy_series)
+regime, smoothed = classify_v4(composite, hy_series)
 
 pb.progress(100, text="Done!")
 pb.empty()
 
-# Align S&P 500
+# Align to S&P 500 — restrict to DISPLAY_START
 sp_daily = market_data.get("sp500", pd.Series(dtype=float))
 if sp_daily is None or sp_daily.empty:
     st.error("Could not fetch S&P 500.")
     st.stop()
 
 sp_daily.index = pd.to_datetime(sp_daily.index).tz_localize(None)
-sp_monthly = sp_daily.resample("ME").last()
+# Restrict display to 2019+
+sp_daily_disp = sp_daily[sp_daily.index >= DISPLAY_START]
+sp_monthly    = sp_daily.resample("ME").last()
 
 combined = pd.DataFrame({
-    "sp500":     sp_monthly,
-    "composite": composite,
-    "cs":        cs_sc,
-    "gl":        gl_led,
-    "dxy":       dxy_sc,
-    "rs":        rs_sc,
-    "mp":        mp_sc,
-    "eq":        eq_sc,
-    "fp":        fp_sc,
-    "hy":        hy_series,
-    "regime":    regime,
-}).dropna(subset=["sp500", "composite"])
+    "sp500":   sp_monthly,
+    "smooth":  smoothed,
+    "gl":      gl_led,
+    "dxy":     dx_s,
+    "rs":      rs_s,
+    "cr":      cr_s,
+    "mp":      mp_s,
+    "eq":      eq_s,
+    "oi":      oi_s,
+    "hy":      hy_series,
+    "regime":  regime,
+}).dropna(subset=["sp500", "smooth"])
 
-if combined.empty:
-    st.error("No overlapping data.")
+# Restrict display
+combined_disp = combined[combined.index >= DISPLAY_START]
+
+if combined_disp.empty:
+    st.error("No data after 2019.")
     st.stop()
 
-start_date   = combined.index[0]
-sp_aligned   = sp_daily[sp_daily.index >= start_date].dropna()
-daily_regime = regime.reindex(sp_aligned.index, method="ffill").ffill()
+daily_regime_full = regime.reindex(sp_daily_disp.index, method="ffill").ffill()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STATS + TABLE
+# STATS
 # ─────────────────────────────────────────────────────────────────────────────
 
-on_pct      = (combined["regime"] == "Risk-On").mean() * 100
+on_pct      = (combined_disp["regime"] == "Risk-On").mean() * 100
 off_pct     = 100 - on_pct
-transitions = int((combined["regime"] != combined["regime"].shift()).sum() - 1)
-date_range  = (combined.index[0].strftime("%b %Y") + " — " +
-               combined.index[-1].strftime("%b %Y"))
-current_reg = combined["regime"].iloc[-1]
+transitions = int((combined_disp["regime"] != combined_disp["regime"].shift()).sum() - 1)
+date_range  = (combined_disp.index[0].strftime("%b %Y") + " — " +
+               combined_disp.index[-1].strftime("%b %Y"))
+current_reg = combined_disp["regime"].iloc[-1]
 cur_color   = "#00D4AA" if current_reg == "Risk-On" else "#FF4757"
-cur_comp    = round(combined["composite"].iloc[-1], 1)
+cur_comp    = round(combined_disp["smooth"].iloc[-1], 1)
 
-st.markdown('<div class="sec-label">Regime Statistics</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec-label">Regime Statistics — 2019 to Present</div>',
+            unsafe_allow_html=True)
 st.markdown(
     '<div class="stat-grid">'
-    '<div class="stat-card"><div class="stat-lbl">Date Range</div>'
-    '<div class="stat-val" style="font-size:12px;color:#aaa;">' + date_range + '</div></div>'
+    '<div class="stat-card"><div class="stat-lbl">Period</div>'
+    '<div class="stat-val" style="font-size:11px;color:#aaa;">' + date_range + '</div></div>'
     '<div class="stat-card"><div class="stat-lbl">Current Regime</div>'
-    '<div class="stat-val" style="color:' + cur_color + ';font-size:15px;">'
+    '<div class="stat-val" style="color:' + cur_color + ';font-size:14px;">'
     + current_reg.upper() + '</div></div>'
     '<div class="stat-card"><div class="stat-lbl">Composite Score</div>'
     '<div class="stat-val" style="color:' + cur_color + ';">'
     + ('+' if cur_comp > 0 else '') + str(cur_comp) + '</div></div>'
     '<div class="stat-card"><div class="stat-lbl">Risk-On %</div>'
     '<div class="stat-val" style="color:#00D4AA;">' + str(round(on_pct)) + '%</div></div>'
-    '<div class="stat-card"><div class="stat-lbl">Regime Switches</div>'
+    '<div class="stat-card"><div class="stat-lbl">Regime Flips</div>'
     '<div class="stat-val" style="color:#E8E8E8;">' + str(transitions) + '</div></div>'
     '</div>',
     unsafe_allow_html=True
 )
 
 events = {
-    "COVID crash 2020":      ("2020-02", "2020-05", "bear"),
-    "COVID bull 2020-21":    ("2020-05", "2021-12", "bull"),
-    "Bear 2022 (full)":      ("2022-01", "2022-10", "bear"),
+    "COVID crash":           ("2020-02", "2020-05", "bear"),
+    "COVID-QE bull":         ("2020-05", "2021-12", "bull"),
+    "Bear 2022 full":        ("2022-01", "2022-10", "bear"),
     "Bull 2023-2024":        ("2022-10", "2024-12", "bull"),
-    "Feb-Apr 2025 crash":    ("2025-02", "2025-04", "bear"),
-    "Current 2025+ recovery":("2025-04", END,       "bull"),
+    "Feb-Apr 2025 crash":    ("2025-01", "2025-04", "bear"),
+    "Recovery 2025+":        ("2025-05", END,       "bull"),
 }
 
-st.markdown('<div class="sec-label">Key Market Periods — Model Accuracy</div>',
-            unsafe_allow_html=True)
+st.markdown('<div class="sec-label">Accuracy by Key Period</div>', unsafe_allow_html=True)
 rows = ""
 for name, (bs, be, kind) in events.items():
     try:
-        window = combined.loc[bs:be, "regime"]
-        if len(window) < 2:
+        w = combined_disp.loc[bs:be, "regime"]
+        if len(w) < 1:
             continue
-        off_p = (window == "Risk-Off").mean() * 100
+        off_p = (w == "Risk-Off").mean() * 100
         on_p  = 100 - off_p
         if kind == "bear":
             pct_c   = off_p
@@ -818,8 +720,7 @@ for name, (bs, be, kind) in events.items():
             + ("▼" if kind == "bear" else "▲") + '</span>' + name + '</td>'
             '<td style="color:#aaa;">' + want + '</td>'
             '<td style="color:' + tc + ';">' + str(round(pct_c)) + '%</td>'
-            '<td style="color:' + color + ';font-weight:600;">' + verdict + '</td>'
-            '</tr>'
+            '<td style="color:' + color + ';font-weight:600;">' + verdict + '</td></tr>'
         )
     except Exception:
         pass
@@ -837,10 +738,10 @@ st.markdown(
 # CHART
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="sec-label">S&P 500 — GL Framework v3</div>',
+st.markdown('<div class="sec-label">S&P 500 Regime Overlay — 2019 to Present</div>',
             unsafe_allow_html=True)
 
-fig = plt.figure(figsize=(18, 14), facecolor="#0A0A0F")
+fig = plt.figure(figsize=(18, 13), facecolor="#0A0A0F")
 gs  = fig.add_gridspec(3, 1, height_ratios=[3, 1, 1], hspace=0.05)
 ax1 = fig.add_subplot(gs[0])
 ax2 = fig.add_subplot(gs[1])
@@ -852,107 +753,109 @@ for ax in [ax1, ax2, ax3]:
     for spine in ax.spines.values():
         spine.set_edgecolor("#1a1a2e")
 
-# Regime shading
+# Regime shading (daily, 2019+)
 in_regime, span_start = None, None
-for d, r in zip(daily_regime.index, daily_regime.values):
+for d, r in zip(daily_regime_full.index, daily_regime_full.values):
     if r != in_regime:
         if in_regime is not None:
             c = "#00D4AA" if in_regime == "Risk-On" else "#FF4757"
-            ax1.axvspan(span_start, d, alpha=0.18, color=c, linewidth=0)
+            ax1.axvspan(span_start, d, alpha=0.20, color=c, linewidth=0)
         in_regime, span_start = r, d
 if in_regime:
     c = "#00D4AA" if in_regime == "Risk-On" else "#FF4757"
-    ax1.axvspan(span_start, daily_regime.index[-1], alpha=0.18, color=c, linewidth=0)
+    ax1.axvspan(span_start, daily_regime_full.index[-1], alpha=0.20, color=c, linewidth=0)
 
-ax1.plot(sp_aligned.index, sp_aligned.values, color="#E8E8E8", linewidth=1.2, zorder=5)
-ma200 = sp_aligned.rolling(200).mean()
-ax1.plot(ma200.index, ma200.values, color="#f59e0b", linewidth=0.7,
-         alpha=0.5, linestyle="--", zorder=4, label="200DMA")
+ax1.plot(sp_daily_disp.index, sp_daily_disp.values,
+         color="#E8E8E8", linewidth=1.2, zorder=5)
+
+# 50DMA and 200DMA (Luke's key visual signals)
+ma50  = sp_daily_disp.rolling(50).mean()
+ma200 = sp_daily_disp.rolling(200).mean()
+ax1.plot(ma50.index,  ma50.values,  color="#5B8DEF", linewidth=0.8,
+         alpha=0.7, zorder=4, label="50DMA")
+ax1.plot(ma200.index, ma200.values, color="#f59e0b", linewidth=0.8,
+         alpha=0.7, linestyle="--", zorder=4, label="200DMA")
+
 ax1.set_yscale("log")
 ax1.set_ylabel("S&P 500 (log)", color="#666", fontsize=8, labelpad=8)
 ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-ax1.set_xlim(sp_aligned.index[0], sp_aligned.index[-1])
+ax1.set_xlim(sp_daily_disp.index[0], sp_daily_disp.index[-1])
 ax1.set_xticklabels([])
 ax1.grid(axis="y", color="#111122", linewidth=0.5)
-ax1.xaxis.set_major_locator(mdates.YearLocator(2))
+ax1.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 7]))
+ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
 
-for ds, lbl in [("2020-02","COVID crash"), ("2020-03","Fed QE"),
-                ("2021-11","2021 peak"), ("2022-01","2022 top"),
-                ("2022-10","2022 low"), ("2025-02","Feb sell-off"),
-                ("2025-04","Apr low")]:
+for ds, lbl in [("2020-02","COVID"), ("2020-04","QE"),
+                ("2022-01","2022 top"), ("2022-10","2022 low"),
+                ("2025-02","Feb sell"), ("2025-04","Apr low")]:
     try:
         ed = pd.Timestamp(ds)
-        if sp_aligned.index[0] <= ed <= sp_aligned.index[-1]:
+        if sp_daily_disp.index[0] <= ed <= sp_daily_disp.index[-1]:
             ax1.axvline(ed, color="#2a2a3a", linewidth=0.7, linestyle="--", zorder=3)
-            ax1.text(ed, sp_aligned.max() * 0.88, lbl, color="#555", fontsize=7,
-                     ha="center", bbox=dict(boxstyle="round,pad=0.2",
-                     facecolor="#0A0A0F", edgecolor="#2a2a3a", alpha=0.9))
+            ax1.text(ed, sp_daily_disp.max() * 0.9, lbl, color="#555",
+                     fontsize=7, ha="center",
+                     bbox=dict(boxstyle="round,pad=0.2", facecolor="#0A0A0F",
+                               edgecolor="#2a2a3a", alpha=0.9))
     except Exception:
         pass
 
 p1 = mpatches.Patch(color="#00D4AA", alpha=0.5, label="Risk-On")
 p2 = mpatches.Patch(color="#FF4757", alpha=0.5, label="Risk-Off")
-p3 = plt.Line2D([0], [0], color="#f59e0b", linewidth=0.8, linestyle="--", label="200DMA")
-ax1.legend(handles=[p1, p2, p3], loc="upper left", framealpha=0,
-           fontsize=8, labelcolor="#aaa")
+p3 = plt.Line2D([0],[0], color="#5B8DEF", linewidth=0.8, label="50DMA")
+p4 = plt.Line2D([0],[0], color="#f59e0b", linewidth=0.8, linestyle="--", label="200DMA")
+ax1.legend(handles=[p1, p2, p3, p4], loc="upper left", framealpha=0,
+           fontsize=7.5, labelcolor="#aaa")
 ax1.set_title(
-    "S&P 500 — GL Framework v3  (2019–Present Focus)"
-    "  |  COVID · 2022 Bear · 2025 Crash · Recovery",
+    "S&P 500 (2019–Present)  |  GL + Dollar + Rate Shock + Credit + Monetary + Equity + Oil",
     color="#E8E8E8", fontsize=11, fontweight="bold", pad=10, loc="left"
 )
 
-# Composite
-cs_p = combined["composite"]
-ax2.fill_between(cs_p.index, cs_p, 0,
-                 where=cs_p >= 0, color="#00D4AA", alpha=0.3, interpolate=True)
-ax2.fill_between(cs_p.index, cs_p, 0,
-                 where=cs_p < 0,  color="#FF4757", alpha=0.3, interpolate=True)
-ax2.plot(cs_p.index, cs_p.values, color="#aaa", linewidth=0.9, zorder=5)
-# HY spread on second axis for context
-ax2_r = ax2.twinx()
-ax2_r.set_facecolor("#0A0A0F")
-ax2_r.plot(combined.index, combined["hy"].values, color="#f59e0b",
-           linewidth=0.6, alpha=0.5, linestyle=":", label="HY spread")
-ax2_r.set_ylabel("HY bps", color="#f59e0b", fontsize=6.5)
-ax2_r.tick_params(colors="#f59e0b", labelsize=6)
-ax2_r.axhline(600, color="#f59e0b", linewidth=0.4, linestyle=":", alpha=0.4)
-for spine in ax2_r.spines.values():
-    spine.set_edgecolor("#1a1a2e")
-
-ax2.axhline(0,  color="#333", linewidth=0.8)
-ax2.axhline(-8, color="#FF4757", linewidth=0.5, linestyle=":", alpha=0.5)
+# Composite (2019+)
+cd = combined_disp
+sm = cd["smooth"]
+ax2.fill_between(sm.index, sm, 0, where=sm >= 0, color="#00D4AA",
+                 alpha=0.35, interpolate=True)
+ax2.fill_between(sm.index, sm, 0, where=sm < 0,  color="#FF4757",
+                 alpha=0.35, interpolate=True)
+ax2.plot(sm.index, sm.values, color="#ccc", linewidth=1.0, zorder=5)
+ax2.axhline(0,   color="#333", linewidth=0.8)
+ax2.axhline(-12, color="#FF4757", linewidth=0.6, linestyle=":", alpha=0.6)
+ax2.text(sm.index[-1], -12, "  -12 Risk-Off", color="#FF4757",
+         fontsize=6.5, va="bottom", alpha=0.7)
 ax2.set_ylim(-100, 100)
-ax2.set_xlim(cs_p.index[0], cs_p.index[-1])
+ax2.set_xlim(sm.index[0], sm.index[-1])
 ax2.set_ylabel("Composite", color="#666", fontsize=7, labelpad=6)
 ax2.set_xticklabels([])
-ax2.xaxis.set_major_locator(mdates.YearLocator(2))
+ax2.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 7]))
 ax2.grid(axis="y", color="#111122", linewidth=0.5)
 
-# Six component scores
-for col, color, label in [
-    ("cs",  "#FF4757", "Credit Stress"),
-    ("gl",  "#00D4AA", "Global Liq"),
+# Seven component scores
+comps = [
+    ("gl",  "#00D4AA", "GL"),
     ("dxy", "#f59e0b", "Dollar"),
     ("rs",  "#FF6B35", "Rate Shock"),
+    ("cr",  "#FF4757", "Credit"),
     ("mp",  "#5B8DEF", "Monetary"),
-    ("eq",  "#a78bfa", "Equity Trend"),
-]:
-    ax3.plot(combined.index, combined[col].values,
-             color=color, linewidth=0.8, alpha=0.85, label=label)
+    ("eq",  "#a78bfa", "Equity"),
+    ("oi",  "#888",    "Oil/Inflation"),
+]
+for col, color, label in comps:
+    if col in cd.columns:
+        ax3.plot(cd.index, cd[col].values,
+                 color=color, linewidth=0.8, alpha=0.85, label=label)
 
 ax3.axhline(0, color="#333", linewidth=0.8)
 ax3.set_ylim(-100, 100)
-ax3.set_xlim(combined.index[0], combined.index[-1])
+ax3.set_xlim(cd.index[0], cd.index[-1])
 ax3.set_ylabel("Components", color="#666", fontsize=7, labelpad=6)
-ax3.xaxis.set_major_locator(mdates.YearLocator(2))
+ax3.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 7]))
 ax3.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 ax3.grid(axis="y", color="#111122", linewidth=0.5)
 ax3.legend(loc="upper left", framealpha=0, fontsize=6.5,
-           labelcolor="#aaa", ncol=6)
+           labelcolor="#aaa", ncol=7)
 
 fig.text(0.99, 0.005,
-         "Generated " + TODAY +
-         "  ·  FRED + yfinance  ·  GL Framework v3",
+         "Generated " + TODAY + "  ·  FRED + yfinance  ·  Clean Build v4  ·  2019–Present",
          ha="right", va="bottom", color="#333", fontsize=7, fontfamily="monospace")
 
 plt.tight_layout(rect=[0, 0.01, 1, 1])
@@ -967,6 +870,6 @@ pdf_buf.seek(0)
 st.download_button(
     label="Download PDF",
     data=pdf_buf,
-    file_name="regime_gl_v3_" + TODAY + ".pdf",
+    file_name="regime_v4_clean_" + TODAY + ".pdf",
     mime="application/pdf",
 )
