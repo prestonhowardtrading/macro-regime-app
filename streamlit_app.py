@@ -807,12 +807,12 @@ st.markdown(
 
 # ── Footer: cache status + timestamp ───────────────────────────────────────
 cache_note = "Live data" if data_source == "live" else "Fallback data (live fetch failed)"
-st.markdown(
+footer_html = (
     '<div style="display:flex;justify-content:space-between;margin-top:16px;">'
     '<div style="font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">'
-    '<span style="color:#00D4AA;">●</span> ' + cache_note + ' · cached 24h · next refresh ' + today_str
+    '<span style="color:#00D4AA;">●</span> ' + cache_note + ' · cached 24h · next refresh ' + today_str +
     '</div>'
     '<div style="font-size:10px;color:#444;font-family:\'DM Mono\',monospace;">As of ' + as_of_date + '</div>'
-    '</div>',
-    unsafe_allow_html=True
+    '</div>'
 )
+st.markdown(footer_html, unsafe_allow_html=True)
