@@ -126,12 +126,25 @@ FRED_SERIES_V4 = {
     "lei":         "USSLIND",       # Conference Board LEI
     "icsa":        "ICSA",          # Jobless claims (weekly → monthly)
     "unrate":      "UNRATE",        # Unemployment rate
+    "wages":       "CES0500000003", # Average hourly earnings (Fed wage watch)
     # Inflation
     "core_pce":    "PCEPILFE",      # Core PCE
     "breakeven5y": "T5YIE",         # 5Y breakeven inflation
     "cpi":         "CPIAUCSL",      # CPI
     # Oil (Luke explicitly mentions in transcript 2)
     "oil":         "DCOILWTICO",    # WTI crude oil price
+    # Labor market — Fed dual mandate
+    "payrolls":    "PAYEMS",        # Nonfarm payrolls (monthly change)
+    "u6":          "U6RATE",        # U6 underemployment (broader than U3)
+    "jolts_quit":  "JTSQUR",        # Quits rate — leading labor strength signal
+    "avg_hours":   "AWHMAN",        # Average weekly hours (leading employment)
+    "wages":       "CES0500000003", # Average hourly earnings
+    "cont_claims": "CCSA",          # Continued jobless claims
+    # Fed outlook / rate expectations proxy
+    "t1y":         "DGS1",          # 1Y Treasury (closer to Fed expectations)
+    "t3m":         "DTB3",          # 3M T-bill (current Fed rate proxy)
+    "sofr":        "SOFR",          # SOFR rate (overnight rate expectations)
+    "pce_target":  "PCEPILFE",      # Core PCE vs 2% target (already fetched as core_pce)
 }
 
 
@@ -382,43 +395,160 @@ def sig_credit(m):
 
 def sig_monetary(m):
     """
-    Monetary policy tone.
-    Note: rate cuts DURING credit crisis (HY>600) neutralized —
-    they are reactive not bullish.
+    Monetary policy + FedWatch proxy + Labor market Fed reaction function.
+
+    THREE COMPONENTS:
+
+    1. FEDWATCH PROXY (2Y yield as market's rate expectation)
+       CME FedWatch shows cut/hike probabilities in real-time.
+       The 2Y Treasury is the best free proxy — it prices in the next
+       12-18 months of Fed policy BEFORE the Fed acts.
+       - 2Y falling fast = market pricing in cuts = bullish
+       - 2Y rising fast = market pricing in hikes = bearish
+       - Rate of CHANGE matters more than level
+
+    2. FED DUAL MANDATE — LABOR MARKET REACTION FUNCTION
+       The Fed has two jobs: control inflation AND maximize employment.
+       When labor weakens → Fed gets permission to cut → bullish.
+       When labor is too hot → Fed stays restrictive → bearish.
+       Luke mentions: "unemployment up → markets go up because Fed
+       will cut rates" — this second-order logic must be captured.
+
+       Labor score = f(unemployment trend, claims trend, wages)
+       mapped to Fed's LIKELY REACTION, not raw labor strength.
+
+    3. POLICY STANCE (actual rates + TIPS + financial conditions)
     """
     s = pd.Series(0.0, index=m.index)
 
-    effr_3m = m["effr"].diff(3)
-    hy_in_crisis = m["hy_spread"] > 600 if "hy_spread" in m.columns \
+    hy_in_crisis = (m["hy_spread"] > 600) if "hy_spread" in m.columns \
                    else pd.Series(False, index=m.index)
 
-    raw_effr = np.where(effr_3m < -0.5,  28, np.where(effr_3m < -0.25, 16,
-               np.where(effr_3m <  0,     5, np.where(effr_3m <  0.25, -8,
-               np.where(effr_3m <  0.5, -20, np.where(effr_3m <  1.0, -32,
-                                                                        -42))))))
-    s += pd.Series(np.where(hy_in_crisis & (effr_3m < 0), 0, raw_effr), index=m.index)
+    # ── 1. FEDWATCH PROXY: 2Y YIELD ──────────────────────────────────
+    # The 2Y moves BEFORE the Fed. It's the market's vote on future policy.
+    # This is effectively what CME FedWatch shows — priced into 2Y.
+    t2y_3m = m["t2y"].diff(3)   # 3-month change = rate expectation shift
+    t2y_1m = m["t2y"].diff(1)   # 1-month for acceleration
+    t2y_lvl = m["t2y"]           # absolute level
 
-    # TIPS real rate level
+    # Direction of market's rate expectation — primary signal
+    raw_fw = np.where(t2y_3m < -1.00,  40,   # market pricing aggressive cuts
+             np.where(t2y_3m < -0.50,  26,
+             np.where(t2y_3m < -0.25,  14,
+             np.where(t2y_3m < -0.05,   5,
+             np.where(t2y_3m <  0.10,   0,
+             np.where(t2y_3m <  0.40, -12,
+             np.where(t2y_3m <  0.75, -24,
+             np.where(t2y_3m <  1.25, -36,
+                                       -45))))))))
+
+    # During credit crisis: falling 2Y = cuts coming = keep this signal
+    # (different from actual cuts which are reactive)
+    s += pd.Series(raw_fw, index=m.index)
+
+    # Absolute level: very high 2Y = rate environment is restrictive
+    s += np.where(t2y_lvl > 5.0, -15,
+         np.where(t2y_lvl > 4.0,  -8,
+         np.where(t2y_lvl > 3.0,  -3,
+         np.where(t2y_lvl < 1.0,  10,
+         np.where(t2y_lvl < 0.5,  18, 0)))))
+
+    # ── 2. LABOR MARKET → FED REACTION FUNCTION ──────────────────────
+    # Map labor data to Fed's likely policy response
+    # Weak labor = Fed cuts = bullish | Hot labor = Fed holds/hikes = bearish
+    # Luke: "unemployment going up → Fed will cut → markets go up"
+
+    labor = pd.Series(0.0, index=m.index)
+
+    # Unemployment trend — Sahm-like but mapped to Fed reaction
+    uc_3m = m["unrate"].diff(3)   # 3-month change
+    uc_6m = m["unrate"].diff(6)   # 6-month change
+    unrate_12m_low = m["unrate"].rolling(12).min()
+    sahm  = m["unrate"] - unrate_12m_low  # Sahm indicator
+
+    # Rising unemployment → Fed gets permission to cut → BULLISH for markets
+    # (counterintuitive but correct — Luke explains this in transcript 1)
+    labor += np.where(uc_3m > 0.5,   25,   # labor weakening fast → big cut signal
+             np.where(uc_3m > 0.3,   15,
+             np.where(uc_3m > 0.1,    6,
+             np.where(uc_3m < -0.3, -15,   # labor too hot → Fed stays hawkish
+             np.where(uc_3m < -0.1,  -6, 0)))))
+
+    # Sahm Rule trigger → recession + Fed emergency cuts incoming
+    # Short-term bearish (recession) but forward-looking = cuts coming
+    # Net effect depends on context — use moderate positive (cuts incoming)
+    labor += np.where(sahm > 0.5,  12,   # Sahm triggered → Fed will cut aggressively
+             np.where(sahm > 0.3,   6,
+             np.where(sahm > 0.1,   2, 0)))
+
+    # Initial jobless claims — most timely labor signal
+    if "icsa" in m.columns:
+        ic_4w = pct(m["icsa"], 3)   # 3-month % change
+        # Rising claims → labor weakening → Fed cuts → bullish expectation
+        labor += np.where(ic_4w > 20,   18,   # claims spiking → big cut priced in
+                 np.where(ic_4w > 10,   10,
+                 np.where(ic_4w > 5,     4,
+                 np.where(ic_4w < -10, -12,   # claims falling → labor hot → Fed holds
+                 np.where(ic_4w < -5,   -6, 0)))))
+
+    # Wages — too hot = Fed can't cut; Goldilocks = Fed can ease
+    if "wages" in m.columns:
+        wage_yoy = pct(m["wages"], 12)
+        # Fed's target is ~3-3.5% wage growth
+        labor += np.where(wage_yoy > 6.0, -18,   # too hot → inflation spiral
+                 np.where(wage_yoy > 4.5,  -8,   # above comfort
+                 np.where(wage_yoy > 3.5,  -2,
+                 np.where(wage_yoy > 2.5,   8,   # Goldilocks → Fed comfortable cutting
+                 np.where(wage_yoy > 1.5,   4,   # soft
+                                           -5))))) # deflation risk
+
+    # Unemployment LEVEL vs historical — very low = Fed alert on inflation
+    unrate_lvl = m["unrate"]
+    labor += np.where(unrate_lvl > 5.5,  10,   # slack → cut-friendly
+             np.where(unrate_lvl > 4.5,   4,
+             np.where(unrate_lvl > 4.0,   0,
+             np.where(unrate_lvl > 3.5,  -6,   # tight → Fed hawkish
+                                          -12)))) # very tight → no cuts
+
+    s += labor * 0.5   # Labor reaction = 50% weight within monetary
+
+    # ── 3. POLICY STANCE ─────────────────────────────────────────────
+    # Actual Fed rate + TIPS + financial conditions
+
+    # Fed funds actual pace (reactive but still informative)
+    effr_3m = m["effr"].diff(3)
+    raw_effr = np.where(effr_3m < -0.5,  20,
+               np.where(effr_3m < -0.25, 10,
+               np.where(effr_3m <  0,     3,
+               np.where(effr_3m <  0.25, -6,
+               np.where(effr_3m <  0.5, -16,
+               np.where(effr_3m <  1.0, -26, -35))))))
+    # Neutralize during credit crisis — cuts are reactive
+    s += pd.Series(np.where(hy_in_crisis & (effr_3m < 0), 0, raw_effr),
+                   index=m.index) * 0.4
+
+    # TIPS real yields
     if "tips10y" in m.columns:
         tips    = m["tips10y"]
         tips_3m = tips.diff(3)
-        s += np.where(tips < -1.5, 16, np.where(tips < -0.5,  9,
-             np.where(tips <  0,    3, np.where(tips <  0.5,  -5,
-             np.where(tips <  1.5,-12,                         -20)))))
-        s += np.where(tips_3m < -0.5,  10, np.where(tips_3m > 0.5, -12, 0))
+        s += np.where(tips < -1.5, 12, np.where(tips < -0.5,  7,
+             np.where(tips <  0,    2, np.where(tips <  0.5,  -5,
+             np.where(tips <  1.5,-10,                         -16))))) * 0.4
+        s += np.where(tips_3m < -0.5,  8,
+             np.where(tips_3m >  0.5, -10, 0)) * 0.4
 
-    # Yield curve
+    # Yield curve (10Y-2Y)
     if "t10y2y" in m.columns:
         yc = m["t10y2y"]
-        s += np.where(yc > 1.5,  12, np.where(yc > 0.5,  6,
-             np.where(yc > 0,     2, np.where(yc > -0.5, -5,
-             np.where(yc > -1.0,-12,                      -18)))))
+        s += np.where(yc > 1.5,  10, np.where(yc > 0.5,  5,
+             np.where(yc > 0,     1, np.where(yc > -0.5, -4,
+             np.where(yc > -1.0, -10,                     -14))))) * 0.4
 
-    # NFCI
+    # NFCI financial conditions
     if "nfci" in m.columns:
         nf = m["nfci"]
-        s += np.where(nf < -0.5,  10, np.where(nf < -0.1,  5,
-             np.where(nf <  0.2,   0, np.where(nf <  0.5,  -7, -14))))
+        s += np.where(nf < -0.5,  8, np.where(nf < -0.1,  4,
+             np.where(nf <  0.2,  0, np.where(nf <  0.5,  -6, -12)))) * 0.4
 
     return s.clip(-100, 100)
 
@@ -530,11 +660,213 @@ def sig_oil_inflation(m, market_data):
     return s.clip(-100, 100)
 
 
+def sig_fed_outlook(m):
+    """
+    CME FedWatch proxy — forward-looking rate cut probability.
+
+    Since we can't scrape CME in a cached backtest, we use the best
+    available proxies that LEAD the actual Fed decision by 1-3 months:
+
+    1. T1Y - T3M spread: market pricing future cuts vs current rate
+       When 1Y yield < 3M yield = market expects cuts ahead = bullish
+       When 1Y yield > 3M yield = market expects hikes = bearish
+
+    2. 2Y yield vs Fed funds rate gap:
+       When 2Y significantly below EFFR = aggressive cut pricing
+       When 2Y above EFFR = hike pricing
+
+    3. SOFR vs EFFR spread: overnight market stress/expectations
+
+    This captures what CME FedWatch shows — the market's forward
+    expectation of Fed policy, which leads actual Fed decisions by
+    1-3 FOMC meetings (roughly 3-6 months).
+    """
+    s = pd.Series(0.0, index=m.index)
+
+    # ── T1Y vs T3M: term premium / rate expectations ──────────────────
+    # 1Y-3M inversion = cuts expected within a year = bullish setup
+    if "t1y" in m.columns and "t3m" in m.columns:
+        t1y  = m["t1y"]
+        t3m  = m["t3m"]
+        gap  = t1y - t3m   # negative = cuts priced in
+
+        s += np.where(gap < -1.0,  45,   # >100bps cuts priced: very bullish
+             np.where(gap < -0.5,  28,
+             np.where(gap < -0.2,  14,
+             np.where(gap < 0.0,    5,
+             np.where(gap < 0.2,   -5,
+             np.where(gap < 0.5,  -14,
+             np.where(gap < 1.0,  -25,
+                                   -35)))))))   # hikes priced: very bearish
+
+        # Rate of change — accelerating cut pricing = strong bullish
+        gap_3m = gap.diff(3)
+        s += np.where(gap_3m < -0.5,  18,
+             np.where(gap_3m < -0.2,   9,
+             np.where(gap_3m >  0.5,  -18,
+             np.where(gap_3m >  0.2,   -9, 0))))
+
+    # ── 2Y vs Fed funds: market vs actual ────────────────────────────
+    # 2Y well below EFFR = market pricing multiple cuts = bullish
+    if "t2y" in m.columns and "effr" in m.columns:
+        gap2 = m["t2y"] - m["effr"]
+
+        s += np.where(gap2 < -1.5,  35,   # deep inversion: big cuts priced
+             np.where(gap2 < -0.75, 20,
+             np.where(gap2 < -0.25,  8,
+             np.where(gap2 <  0.25,  0,
+             np.where(gap2 <  0.75, -10,
+             np.where(gap2 <  1.5,  -20,
+                                    -30))))))   # 2Y > EFFR: hikes priced
+
+    # ── SOFR vs EFFR: overnight market stress ─────────────────────────
+    # SOFR spiking above EFFR = funding stress = bearish
+    if "sofr" in m.columns and "effr" in m.columns:
+        sofr_gap = m["sofr"] - m["effr"]
+        s += np.where(sofr_gap > 0.25, -20,
+             np.where(sofr_gap > 0.1,  -10,
+             np.where(sofr_gap < -0.1,   8, 0)))
+
+    return s.clip(-100, 100)
+
+
+def sig_labor_dual_mandate(m):
+    """
+    Fed Dual Mandate: Employment + Inflation INTERACTION.
+
+    The key is how labor and inflation interact to constrain/enable Fed policy:
+
+    SCENARIO A — Bullish: Labor weakening + inflation falling
+      → Fed CAN cut aggressively → risk assets rally
+      → This is the 2023-2024 soft landing
+
+    SCENARIO B — Bearish: Labor strong + inflation high
+      → Fed CANNOT cut (2022 exactly)
+      → Risk assets get crushed
+
+    SCENARIO C — Mixed bullish: Labor weakening but inflation controlled
+      → Fed cuts to protect employment → risk assets OK
+
+    SCENARIO D — Mixed bearish: Labor fine + inflation reaccelerating
+      → Fed tightens more than expected → headwind
+
+    Individual components:
+    - Payrolls momentum (leading)
+    - Jobless claims trend (most timely)
+    - Unemployment Sahm-style acceleration
+    - Wage growth vs inflation (real wages = consumer health)
+    - JOLTS quits rate (highest = workers confident = strong labor)
+    - Dual mandate interaction score (the key NEW signal)
+    """
+    s = pd.Series(0.0, index=m.index)
+
+    # ── Nonfarm payrolls momentum ──────────────────────────────────────
+    if "payrolls" in m.columns and not m["payrolls"].isna().all():
+        pay_3m = m["payrolls"].diff(3)   # 3M change in level
+        pay_mom = pct(m["payrolls"], 3)  # % change
+        s += np.where(pay_3m > 600,  20,
+             np.where(pay_3m > 300,  12,
+             np.where(pay_3m > 100,   5,
+             np.where(pay_3m > -100, -5,
+             np.where(pay_3m > -300,-15,
+                                    -28)))))
+
+    # ── Jobless claims (most timely labor signal) ──────────────────────
+    if "icsa" in m.columns:
+        ic_chg = pct(m["icsa"], 3)
+        ic_lvl = m["icsa"]
+        # Absolute level vs historical threshold
+        s += np.where(ic_lvl < 200,   12,
+             np.where(ic_lvl < 250,    6,
+             np.where(ic_lvl < 300,    2,
+             np.where(ic_lvl < 350,   -4,
+             np.where(ic_lvl < 450,  -12,
+                                      -22)))))
+        # Trend
+        s += np.where(ic_chg < -10,  10,
+             np.where(ic_chg < -5,    5,
+             np.where(ic_chg > 20,  -18,
+             np.where(ic_chg > 10,  -10,
+             np.where(ic_chg > 5,    -5, 0)))))
+
+    # ── Continued claims (depth of unemployment) ──────────────────────
+    if "cont_claims" in m.columns and not m["cont_claims"].isna().all():
+        cc_3m = pct(m["cont_claims"], 3)
+        s += np.where(cc_3m < -8,   8,
+             np.where(cc_3m < -3,   4,
+             np.where(cc_3m > 15,  -12,
+             np.where(cc_3m > 8,    -6, 0))))
+
+    # ── JOLTS Quits Rate — most leading labor signal ───────────────────
+    # High quits = workers confident, labor tight = strong economy
+    # But too high → wage pressure → inflation → Fed constrained
+    if "jolts_quit" in m.columns and not m["jolts_quit"].isna().all():
+        qr     = m["jolts_quit"]
+        qr_3m  = qr.diff(3)
+        # Level: 2-3% = healthy, <1.8% = labor cooling
+        s += np.where(qr > 3.0,   5,   # very high: slightly negative (wage pressure)
+             np.where(qr > 2.5,  12,   # strong: bullish
+             np.where(qr > 2.0,   6,
+             np.where(qr > 1.8,  -4,
+             np.where(qr > 1.5, -12,
+                                 -20)))))
+        # Trend
+        s += np.where(qr_3m > 0.2,   8,
+             np.where(qr_3m < -0.2, -10, 0))
+
+    # ── Real wages (wages - inflation) — consumer health ──────────────
+    if "wages" in m.columns and "core_pce" in m.columns:
+        wage_yoy = pct(m["wages"], 12)
+        pce_yoy  = pct(m["core_pce"], 12)
+        real_wage = wage_yoy - pce_yoy  # positive = real gains = bullish
+        s += np.where(real_wage > 2,   14,
+             np.where(real_wage > 0.5,  8,
+             np.where(real_wage > 0,    3,
+             np.where(real_wage > -1,  -4,
+             np.where(real_wage > -2, -10,
+                                      -18)))))
+
+    # ── DUAL MANDATE INTERACTION — the key new signal ─────────────────
+    # This is what determines whether the Fed is FREE to act or CONSTRAINED
+    if "unrate" in m.columns and "core_pce" in m.columns:
+        un    = m["unrate"]
+        pce   = pct(m["core_pce"], 12)
+        un_3m = un.diff(3)
+
+        # Fed FREEDOM score: can they cut without stoking inflation?
+        # Falling unemployment + high inflation = constrained (bearish)
+        # Rising unemployment + falling inflation = free to cut (bullish)
+        labor_stress  = un_3m > 0.3   # unemployment rising
+        infl_falling  = pce < 2.5     # inflation near/below target
+        infl_hot      = pce > 3.0     # inflation above comfort zone
+        labor_tight   = un < 4.0      # labor market very tight
+
+        # Best case: Fed can cut freely (labor weakening + inflation cooling)
+        dual_bullish = labor_stress & infl_falling
+        # Worst case: Fed stuck (labor tight + inflation hot = 2022)
+        dual_bearish = labor_tight & infl_hot
+
+        s += pd.Series(
+            np.where(dual_bullish,  25,    # Fed free to cut = very bullish
+            np.where(dual_bearish, -30,    # Fed stuck = very bearish (2022)
+                                     0)),  # mixed = neutral
+            index=m.index
+        )
+
+        # Sahm Rule: unemployment 0.5% above 12M low = recession signal
+        un_12m_low = un.rolling(12).min()
+        sahm       = un - un_12m_low
+        s += np.where(sahm > 0.5, -20,
+             np.where(sahm > 0.3, -10, 0))
+
+    return s.clip(-100, 100)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPOSITE + REGIME
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_v4(gl, dxy, rs, cr, mp, eq, oi):
+def build_v4(gl, dxy, rs, cr, mp, eq, oi, fw, lm):
     """
     Weights: GL 22%, DXY 20%, RS 18%, CR 16%, MP 10%, EQ 8%, OI 6%
     No mode switching. Simple weighted sum.
