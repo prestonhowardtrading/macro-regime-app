@@ -866,7 +866,7 @@ def sig_labor_dual_mandate(m):
 # COMPOSITE + REGIME
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_v4(gl, dxy, rs, cr, mp, eq, oi, fw, lm):
+def build_v4(gl, dxy, rs, cr, mp, eq, oi):
     """
     Weights: GL 22%, DXY 20%, RS 18%, CR 16%, MP 10%, EQ 8%, OI 6%
     No mode switching. Simple weighted sum.
