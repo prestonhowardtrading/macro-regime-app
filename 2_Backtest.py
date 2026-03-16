@@ -170,7 +170,7 @@ def fetch_v4(today_str, api_key):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_v4(today_str):
-    """Fresh fetch with new function name to bust old cache."""
+    """Fresh fetch with robust MultiIndex handling."""
     import yfinance as yf
     results = {}
     failed  = []
@@ -178,18 +178,42 @@ def fetch_market_v4(today_str):
         "sp500": "^GSPC",
         "dxy":   "DX-Y.NYB",
         "bcom":  "^BCOM",
-        "oil_yf":"CL=F",     # WTI futures for oil momentum
+        "oil_yf":"CL=F",
     }
     for name, ticker in tickers.items():
         try:
             raw = yf.download(ticker, start=FETCH_START, end=END,
                               progress=False, auto_adjust=True)
-            s = raw["Close"][ticker] if isinstance(raw.columns, pd.MultiIndex) \
-                else raw["Close"]
+            if raw.empty:
+                failed.append(ticker)
+                continue
+            # Handle MultiIndex columns (newer yfinance)
+            if isinstance(raw.columns, pd.MultiIndex):
+                # Try to get Close for this ticker
+                if ("Close", ticker) in raw.columns:
+                    s = raw[("Close", ticker)]
+                elif "Close" in raw.columns.get_level_values(0):
+                    s = raw["Close"].iloc[:, 0]
+                else:
+                    s = raw.iloc[:, 0]
+            else:
+                if "Close" in raw.columns:
+                    s = raw["Close"]
+                elif "Adj Close" in raw.columns:
+                    s = raw["Adj Close"]
+                else:
+                    s = raw.iloc[:, 0]
             s = s.squeeze()
-            s.index = pd.to_datetime(s.index).tz_localize(None)
-            results[name] = s
-        except Exception:
+            if hasattr(s.index, 'tz') and s.index.tz is not None:
+                s.index = s.index.tz_localize(None)
+            else:
+                s.index = pd.to_datetime(s.index)
+            s = s.dropna()
+            if not s.empty:
+                results[name] = s
+            else:
+                failed.append(ticker)
+        except Exception as e:
             failed.append(ticker)
     return results, failed
 
@@ -952,10 +976,24 @@ pb.progress(100, text="Done!")
 pb.empty()
 
 # Align to S&P 500 — restrict to DISPLAY_START
-sp_daily = market_data.get("sp500", pd.Series(dtype=float))
-if sp_daily is None or sp_daily.empty:
-    st.error("Could not fetch S&P 500.")
-    st.stop()
+sp_daily = market_data.get("sp500", None)
+if sp_daily is None or (hasattr(sp_daily, 'empty') and sp_daily.empty):
+    # Try fetching S&P 500 directly as fallback
+    try:
+        import yfinance as yf
+        raw = yf.download("^GSPC", start=FETCH_START, end=END,
+                          progress=False, auto_adjust=True)
+        if isinstance(raw.columns, pd.MultiIndex):
+            sp_daily = raw["Close"].iloc[:, 0]
+        else:
+            sp_daily = raw["Close"]
+        sp_daily = sp_daily.squeeze().dropna()
+        sp_daily.index = pd.to_datetime(sp_daily.index)
+        if hasattr(sp_daily.index, 'tz') and sp_daily.index.tz:
+            sp_daily.index = sp_daily.index.tz_localize(None)
+    except Exception:
+        st.error("Could not fetch S&P 500 from yfinance. Please check your internet connection and try again.")
+        st.stop()
 
 sp_daily.index = pd.to_datetime(sp_daily.index).tz_localize(None)
 # Restrict display to 2019+
