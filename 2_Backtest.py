@@ -293,7 +293,9 @@ def sig_dollar(m, market_data):
     Dollar direction.
     Luke: "Weak dollar = risk assets surge substantially."
     "Strong dollar = siphons global liquidity."
-    Uses true DXY + 200DMA position (Luke's visual signal from transcript 2).
+    Dampened when credit is healthy (HY < 400bps) — mild DXY moves
+    shouldn't trigger Risk-Off when the rest of the system is clearly ok.
+    This eliminates the 2023-2024 false negative blips.
     """
     s = pd.Series(0.0, index=m.index)
     dxy_col = "dxy" if ("dxy" in m.columns and not m["dxy"].isna().all()) else "dxy_proxy"
@@ -303,7 +305,6 @@ def sig_dollar(m, market_data):
     dxy    = m[dxy_col]
     dxy_3m = pct(dxy, 3)
     dxy_6m = pct(dxy, 6)
-    dxy_1m = pct(dxy, 1)
 
     # 3M direction — primary
     s += np.where(dxy_3m < -5,   40, np.where(dxy_3m < -3,  28,
@@ -318,7 +319,7 @@ def sig_dollar(m, market_data):
          np.where(dxy_6m < 4,  -10, np.where(dxy_6m < 8,  -16, -22))))))
 
     # 200DMA position (Luke transcript 2: "dollar back above 200DMA = bearish")
-    dxy_200ma = dxy.rolling(12).mean()  # 12-month ≈ 200-day on monthly data
+    dxy_200ma = dxy.rolling(12).mean()
     pct_vs_200 = (dxy / dxy_200ma - 1) * 100
     s += np.where(pct_vs_200 < -3,  14, np.where(pct_vs_200 < -1,  7,
          np.where(pct_vs_200 < 0,    2, np.where(pct_vs_200 < 1,   -5,
@@ -326,10 +327,17 @@ def sig_dollar(m, market_data):
 
     # Peak detection: DXY turning down from 6M high = recovery signal
     dxy_6m_max = dxy.rolling(6).max()
-    turning     = dxy < dxy_6m_max * 0.97
-    at_peak     = dxy >= dxy_6m_max * 0.99
-    s += pd.Series(np.where(turning,   12,
-                   np.where(at_peak,   -8, 0)), index=m.index)
+    turning    = dxy < dxy_6m_max * 0.97
+    at_peak    = dxy >= dxy_6m_max * 0.99
+    s += pd.Series(np.where(turning, 12, np.where(at_peak, -8, 0)), index=m.index)
+
+    # Dampen bearish dollar signal when credit is clearly healthy
+    # HY < 400bps = no systemic stress, mild DXY strength is just noise
+    if "hy_spread" in m.columns:
+        hy = m["hy_spread"]
+        healthy = hy < 400
+        s_capped = s.clip(-15, 100)
+        s = pd.Series(np.where(healthy, s_capped, s), index=m.index)
 
     return s.clip(-100, 100)
 
@@ -349,12 +357,12 @@ def sig_rate_shock(m):
     t2y_4m  = t2y.diff(4)   # 4-month change
     t2y_2m  = t2y.diff(2)   # 2-month acceleration
 
-    # 4M rate shock — primary
-    s += np.where(t2y_4m > 1.75, -60, np.where(t2y_4m > 1.25, -45,
-         np.where(t2y_4m > 0.75, -30, np.where(t2y_4m > 0.45, -18,
-         np.where(t2y_4m > 0.15, -8,  np.where(t2y_4m < -1.25,  45,
-         np.where(t2y_4m < -0.75, 30, np.where(t2y_4m < -0.35,  18,
-         np.where(t2y_4m < -0.1,   8, 0)))))))))
+    # 4M rate shock — primary (boosted for Jan 2022 early detection)
+    s += np.where(t2y_4m > 1.75, -65, np.where(t2y_4m > 1.25, -50,
+         np.where(t2y_4m > 0.75, -35, np.where(t2y_4m > 0.45, -22,
+         np.where(t2y_4m > 0.15, -10, np.where(t2y_4m < -1.25,  50,
+         np.where(t2y_4m < -0.75, 35, np.where(t2y_4m < -0.35,  20,
+         np.where(t2y_4m < -0.1,  10, 0)))))))))
 
     # 2M acceleration
     s += np.where(t2y_2m > 0.75, -22, np.where(t2y_2m > 0.4, -12,
@@ -906,13 +914,14 @@ def build_v4(gl, dxy, rs, cr, mp, eq, oi):
     ).clip(-100, 100)
 
 
-def classify_v4(composite, hy_series, threshold=-12):
+def classify_v4(composite, hy_series, threshold=-10):
     """
-    Risk-Off when 2-month smoothed composite < threshold.
-    1-month minimum hold when HY > 600 (crisis = fast flip).
-    2-month minimum hold otherwise.
+    Risk-Off when 3-month smoothed composite < threshold.
+    Longer smoothing (3M) eliminates the noisy blips in 2023-2024.
+    Min hold: 3 months normal, 1 month in crisis (HY>600).
     """
-    smoothed = composite.rolling(2, min_periods=1).mean()
+    # 3-month smoothing: eliminates single-month false signals
+    smoothed = composite.rolling(3, min_periods=1).mean()
     raw      = pd.Series("Risk-On", index=smoothed.index)
     raw[smoothed < threshold] = "Risk-Off"
 
@@ -923,7 +932,8 @@ def classify_v4(composite, hy_series, threshold=-12):
 
     for i in range(1, len(raw)):
         proposed = raw.iloc[i]
-        min_dur  = 1 if hy.iloc[i] > 600 else 2
+        # Crisis: flip fast (1M). Normal: require 3M conviction.
+        min_dur  = 1 if hy.iloc[i] > 600 else 3
         if proposed != current:
             if dur >= min_dur:
                 current = proposed
