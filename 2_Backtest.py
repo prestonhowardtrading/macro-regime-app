@@ -525,6 +525,43 @@ off_pct = (reg_disp == "Risk-Off").mean() * 100
 
 st.markdown('<div class="sec-label">Component Scores — 0 = Bullish · 100 = Bearish</div>',
             unsafe_allow_html=True)
+
+# ── DEBUG: show raw FRED values so we can verify data is loading ──────────
+with st.expander("🔍 Raw Data Debug — click to verify FRED values are loading"):
+    latest = monthly.iloc[-1]
+    debug_rows = []
+    for col in ["effr", "t2y", "m2", "tips10y", "cpi", "oil",
+                "lei", "payems", "hy_spread", "walcl", "ecb_assets", "dxy"]:
+        val = latest.get(col, None)
+        if val is not None and not pd.isna(val):
+            debug_rows.append({"Series": col, "Latest Value": round(float(val), 4),
+                               "Status": "✓ Loaded"})
+        else:
+            debug_rows.append({"Series": col, "Latest Value": "MISSING",
+                               "Status": "✗ Failed"})
+    st.dataframe(pd.DataFrame(debug_rows), use_container_width=True)
+    
+    # Show computed sub-values
+    st.write("**Computed inputs (latest month):**")
+    try:
+        effr_v    = float(monthly["effr"].iloc[-1])
+        effr_6m_v = float(monthly["effr"].diff(6).iloc[-1])
+        m2_yoy_v  = float(monthly["m2"].pct_change(12).iloc[-1] * 100)
+        t2y_v     = float(monthly["t2y"].iloc[-1])
+        t2y_2m_v  = float(monthly["t2y"].diff(2).iloc[-1])
+        cpi_v     = float(monthly["cpi"].pct_change(12).iloc[-1] * 100)
+        oil_v     = float(monthly["oil"].iloc[-1]) if "oil" in monthly.columns else None
+        oil_1m_v  = float(monthly["oil"].pct_change(1).iloc[-1] * 100) if "oil" in monthly.columns else None
+        
+        st.write(f"- EFFR: {effr_v:.2f}%  |  6M change: {effr_6m_v:+.2f}%")
+        st.write(f"- 2Y yield: {t2y_v:.2f}%  |  2M change: {t2y_2m_v:+.3f}%")
+        st.write(f"- M2 YoY: {m2_yoy_v:+.1f}%")
+        st.write(f"- CPI YoY: {cpi_v:+.1f}%")
+        if oil_v: st.write(f"- WTI Oil: ${oil_v:.2f}  |  1M change: {oil_1m_v:+.1f}%")
+        st.write(f"- C1={cur_c1:.0f}  C2={cur_c2:.0f}  C3={cur_c3:.0f}  →  Bear Score={cur_score}")
+    except Exception as e:
+        st.write(f"Error computing debug values: {e}")
+
 st.markdown(
     '<div class="kpi-grid">'
     + bar(cur_c1, "C1 · Liquidity Regime (40%)",
