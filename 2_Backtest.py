@@ -111,28 +111,34 @@ FRED_SERIES_V4 = {
     "tga":         "WTREGEN",       # TGA
     "rrp":         "RRPONTSYD",     # Reverse repo
     # Dollar
-    "dxy_proxy":   "DTWEXBGS",      # Trade-weighted USD (daily → monthly)
+    "dxy_proxy":   "DTWEXBGS",      # Trade-weighted USD
     # Rate shock / monetary
-    "t2y":         "DGS2",          # 2Y Treasury (daily → monthly)
+    "t2y":         "DGS2",          # 2Y Treasury
     "effr":        "FEDFUNDS",      # Fed funds rate
     "tips10y":     "DFII10",        # 10Y TIPS real yield
-    "t10y2y":      "T10Y2Y",        # Yield curve
-    "nfci":        "NFCI",          # Financial conditions index
+    "t10y2y":      "T10Y2Y",        # Yield curve 10Y-2Y
+    "nfci":        "NFCI",          # Chicago Fed Financial Conditions
     # Credit stress
-    "hy_spread":   "BAMLH0A0HYM2",  # HY OAS spread (daily → monthly)
+    "hy_spread":   "BAMLH0A0HYM2",  # HY OAS spread
     "ig_spread":   "BAMLC0A0CM",    # IG OAS spread
+    # Financial system stress (Luke: "SOFR spiking = stress building")
+    "sofr":        "SOFR",          # SOFR rate
+    # Bond market volatility (Luke + Cowen: "MOVE index grinding higher = stress")
+    "move":        "BAMLMOVE",      # MOVE index (bond vol)
     # Economic activity
     "ism_mfg":     "NAPM",          # ISM Manufacturing PMI
     "lei":         "USSLIND",       # Conference Board LEI
-    "icsa":        "ICSA",          # Jobless claims (weekly → monthly)
+    "icsa":        "ICSA",          # Initial jobless claims
     "unrate":      "UNRATE",        # Unemployment rate
-    "wages":       "CES0500000003", # Average hourly earnings (Fed wage watch)
+    # Employment level YoY (Cowen: "going negative = recession signal")
+    "payrolls":    "PAYEMS",        # Total nonfarm payrolls
     # Inflation
     "core_pce":    "PCEPILFE",      # Core PCE
     "breakeven5y": "T5YIE",         # 5Y breakeven inflation
     "cpi":         "CPIAUCSL",      # CPI
-    # Oil (Luke explicitly mentions in transcript 2)
-    "oil":         "DCOILWTICO",    # WTI crude oil price
+    "ppi":         "PPIACO",        # PPI (Luke mentions PPI beat)
+    # Oil — rate of change is key (Cowen: largest weekly spike since 1983)
+    "oil":         "DCOILWTICO",    # WTI crude oil (daily → monthly)
     # Labor market — Fed dual mandate
     "payrolls":    "PAYEMS",        # Nonfarm payrolls (monthly change)
     "u6":          "U6RATE",        # U6 underemployment (broader than U3)
@@ -635,59 +641,129 @@ def sig_equity_trend(m, market_data):
 
 def sig_oil_inflation(m, market_data):
     """
-    Oil/Inflation risk signal.
-    From Luke transcript 2: "If oil stays elevated it's inflationary.
-    When you have inflation back in the mix, it complicates what the
-    central banks can do in terms of lowering interest rates."
-    "Oil is the wild card right now."
+    Oil/Inflation/Financial Stress signal.
 
-    High oil + rising inflation = Fed can't cut = bearish for risk assets.
-    Low oil + falling inflation = Fed can cut = bullish.
+    Key insights from all transcripts:
+
+    LUKE (transcript 3):
+    "Oil broke out bullish just before the conflict started"
+    "SOFR spiking = financial system stress building"
+    "MOVE index grinding higher = bond stress = bearish"
+    "Private credit stress = early warning"
+
+    BENJAMIN COWEN:
+    "It's the RATE OF CHANGE of oil that matters, not absolute level"
+    "Oil spiking in late business cycle = beginning of the end"
+    "Largest weekly spike since 1983 = extreme signal"
+    "Employment level YoY going negative = recession signal"
+    "Non-farm payrolls negative = labor deteriorating fast"
+
+    Both: "Oil spike → inflation fear → Fed can't cut = checkmate"
     """
     s = pd.Series(0.0, index=m.index)
 
-    # Oil price momentum
+    # ── OIL: Rate of change is the key signal ─────────────────────────
     oil_col = None
-    if "oil_yf" in m.columns and not m["oil_yf"].isna().all():
-        oil_col = "oil_yf"
-    elif "oil" in m.columns and not m["oil"].isna().all():
-        oil_col = "oil"
+    for c in ["oil_yf", "oil"]:
+        if c in m.columns and not m[c].isna().all():
+            oil_col = c
+            break
 
     if oil_col:
         oil    = m[oil_col]
-        oil_3m = pct(oil, 3)
-        oil_6m = pct(oil, 6)
-        oil_lvl = oil / oil.rolling(12).mean()  # vs 12M avg
+        oil_1m = pct(oil, 1)   # 1M — catches acute spikes like Mar 2026
+        oil_3m = pct(oil, 3)   # 3M — sustained moves
+        oil_6m = pct(oil, 6)   # 6M — trend
 
-        # Rapid oil surge = inflation risk = bearish
-        s += np.where(oil_3m > 25, -30, np.where(oil_3m > 15, -18,
-             np.where(oil_3m > 8,  -8,  np.where(oil_3m < -20,  18,
-             np.where(oil_3m < -10,  9, np.where(oil_3m < -5,   4, 0))))))
+        # Acute spike (Cowen: "largest weekly spike since 1983")
+        # Monthly data can't capture weekly, but 1M change is next best
+        s += np.where(oil_1m > 30, -35,   # extreme spike (like Mar 2026)
+             np.where(oil_1m > 20, -22,
+             np.where(oil_1m > 12, -12,
+             np.where(oil_1m > 6,   -5,
+             np.where(oil_1m < -20,  18,   # oil crash = deflationary = bullish
+             np.where(oil_1m < -12,  10,
+             np.where(oil_1m < -6,    5, 0)))))))
 
-        # Oil level vs average (persistent high = sustained inflation)
-        s += np.where(oil_lvl > 1.3, -20, np.where(oil_lvl > 1.15, -10,
-             np.where(oil_lvl > 0.85,  0, np.where(oil_lvl > 0.70,   8,
-                                                                      15))))
+        # 3M sustained move
+        s += np.where(oil_3m > 30, -25,
+             np.where(oil_3m > 20, -15,
+             np.where(oil_3m > 10,  -8,
+             np.where(oil_3m < -25,  15,
+             np.where(oil_3m < -15,   8, 0)))))
 
-    # Inflation expectations — when rising = Fed constrained
+        # Level vs 12M average (persistent elevation = sustained inflation)
+        oil_vs_avg = oil / oil.rolling(12).mean()
+        s += np.where(oil_vs_avg > 1.4, -20,
+             np.where(oil_vs_avg > 1.2, -10,
+             np.where(oil_vs_avg > 1.0,   0,
+             np.where(oil_vs_avg > 0.8,   5,
+                                          10))))
+
+    # ── SOFR SPIKE: Luke explicitly calls this out ─────────────────────
+    # "SOFR was spiking on same day as rate cut = system stress"
+    if "sofr" in m.columns and not m["sofr"].isna().all():
+        sofr     = m["sofr"]
+        sofr_1m  = sofr.diff(1)
+        sofr_3m  = sofr.diff(3)
+        # Spike relative to recent baseline
+        sofr_vs_effr = sofr - m["effr"] if "effr" in m.columns else sofr.diff(1) * 0
+        s += np.where(sofr_1m > 0.3,  -18,   # acute spike
+             np.where(sofr_1m > 0.1,   -8,
+             np.where(sofr_1m < -0.2,   8,   # easing = good
+             np.where(sofr_1m < -0.1,   4, 0))))
+        # SOFR above EFFR = repo stress
+        s += np.where(sofr_vs_effr > 0.2, -12,
+             np.where(sofr_vs_effr > 0.1,  -5,
+             np.where(sofr_vs_effr < -0.1,  5, 0)))
+
+    # ── MOVE INDEX: Bond market volatility ─────────────────────────────
+    # Luke + Cowen: "MOVE index grinding higher = stress = bearish"
+    if "move" in m.columns and not m["move"].isna().all():
+        move    = m["move"]
+        move_3m = move.diff(3)
+        # Level — elevated bond vol = uncertainty
+        s += np.where(move > 140, -20,
+             np.where(move > 110, -10,
+             np.where(move > 90,   -3,
+             np.where(move < 60,   10,
+             np.where(move < 75,    5, 0)))))
+        # Direction — grinding higher = deteriorating
+        s += np.where(move_3m > 30, -15,
+             np.where(move_3m > 15,  -8,
+             np.where(move_3m < -20,  12,
+             np.where(move_3m < -10,   6, 0))))
+
+    # ── EMPLOYMENT LEVEL YoY: Cowen's recession signal ─────────────────
+    # "Going negative = recession. Currently very close."
+    if "payrolls" in m.columns and not m["payrolls"].isna().all():
+        pay_yoy = pct(m["payrolls"], 12)
+        s += np.where(pay_yoy > 2.0,   8,   # strong job growth = bullish
+             np.where(pay_yoy > 1.0,   4,
+             np.where(pay_yoy > 0.0,   0,
+             np.where(pay_yoy > -0.5, -10,  # barely positive = warning
+                                      -25)))) # negative = recession signal
+
+    # ── INFLATION EXPECTATIONS ─────────────────────────────────────────
     if "breakeven5y" in m.columns:
-        be     = m["breakeven5y"]
-        be_3m  = be.diff(3)
-        be_lvl = be
-        # Level: above 2.5% = hot = headwind
-        s += np.where(be_lvl > 3.0, -20, np.where(be_lvl > 2.5, -10,
-             np.where(be_lvl > 2.0,   0, np.where(be_lvl > 1.5,   5,
-                                                                   10))))
-        # Direction
-        s += np.where(be_3m > 0.4, -15, np.where(be_3m > 0.15, -7,
-             np.where(be_3m < -0.3,  12, np.where(be_3m < -0.1,  5, 0))))
+        be    = m["breakeven5y"]
+        be_3m = be.diff(3)
+        s += np.where(be > 3.0, -18, np.where(be > 2.5, -8,
+             np.where(be > 2.0,  0,  np.where(be > 1.5,  5, 8))))
+        s += np.where(be_3m > 0.4, -14, np.where(be_3m > 0.15, -6,
+             np.where(be_3m < -0.3,  10, np.where(be_3m < -0.1,  4, 0))))
 
-    # Core PCE vs target
+    # ── CORE PCE vs Fed target ─────────────────────────────────────────
     if "core_pce" in m.columns:
         pce = pct(m["core_pce"], 12)
-        s += np.where(pce > 4.0, -18, np.where(pce > 3.0, -10,
-             np.where(pce > 2.5,  -4, np.where(pce > 1.5,   4,
-                                                              8))))
+        s += np.where(pce > 4.0, -16, np.where(pce > 3.0, -8,
+             np.where(pce > 2.5,  -3, np.where(pce > 1.5,  4, 8))))
+
+    # ── PPI (leading inflation indicator) ──────────────────────────────
+    if "ppi" in m.columns and not m["ppi"].isna().all():
+        ppi_3m = pct(m["ppi"], 3)
+        s += np.where(ppi_3m > 5,  -10, np.where(ppi_3m > 2.5, -5,
+             np.where(ppi_3m < -5,   8, np.where(ppi_3m < -2.5,  4, 0))))
 
     return s.clip(-100, 100)
 
@@ -900,17 +976,17 @@ def sig_labor_dual_mandate(m):
 
 def build_v4(gl, dxy, rs, cr, mp, eq, oi):
     """
-    Weights: GL 22%, DXY 20%, RS 18%, CR 16%, MP 10%, EQ 8%, OI 6%
-    No mode switching. Simple weighted sum.
+    Weights: GL 22%, DXY 18%, RS 18%, CR 16%, MP 10%, EQ 7%, OI/Stress 9%
+    OI weight increased — now covers Oil ROC + SOFR + MOVE + Employment.
     """
     return (
         gl  * 0.22 +
-        dxy * 0.20 +
+        dxy * 0.18 +
         rs  * 0.18 +
         cr  * 0.16 +
         mp  * 0.10 +
-        eq  * 0.08 +
-        oi  * 0.06
+        eq  * 0.07 +
+        oi  * 0.09
     ).clip(-100, 100)
 
 
@@ -1186,8 +1262,8 @@ p4 = plt.Line2D([0],[0], color="#f59e0b", linewidth=0.8, linestyle="--", label="
 ax1.legend(handles=[p1, p2, p3, p4], loc="upper left", framealpha=0,
            fontsize=7.5, labelcolor="#aaa")
 ax1.set_title(
-    "S&P 500 (2019–Present)  |  GL + Dollar + Rate Shock + Credit + Monetary + Equity + Oil",
-    color="#E8E8E8", fontsize=11, fontweight="bold", pad=10, loc="left"
+    "S&P 500 (2019–Present)  |  GL + Dollar + Rate Shock + Credit + Monetary + Equity + Oil/SOFR/MOVE",
+    color="#E8E8E8", fontsize=10, fontweight="bold", pad=10, loc="left"
 )
 
 # Composite (2019+)
