@@ -256,23 +256,38 @@ def c1_liquidity_regime(m):
 
 def c2_cycle_oil(m):
     """
-    Business cycle position + oil constraint. Starts at 30 (slightly bearish lean
-    since we are in late cycle). Adjusts based on oil + employment + LEI.
+    Business cycle position + oil constraint.
     
-    Oil only bearish when Fed CONSTRAINED (CPI>3%, not cutting fast).
-    Oil crashing = deflationary = bullish (COVID 2020).
+    Oil only bearish when Fed is ACTUALLY constrained:
+    - Fed is already hiking (effr_6m > 0.25), OR
+    - Market is pricing hikes with hot inflation (t2y surging + CPI>4%), OR  
+    - Fed can't cut even if it wants to (2Y barely below EFFR = limited cuts priced)
+    
+    This prevents 2021 from being bearish — Fed was choosing to stay easy
+    even with 5% CPI. The constraint only bit when Fed STARTED hiking (Jan 2022).
     """
     idx = m.index
-    s   = np.full(len(idx), 30.0)  # start slightly above neutral
+    s   = np.full(len(idx), 15.0)  # lower base: strong cycle = can get to 0
 
     cpi    = m["cpi"].values
     cpi_12 = np.concatenate([np.full(12, np.nan),
                               (cpi[12:] / cpi[:-12] - 1) * 100])
-    effr    = m["effr"].values
-    effr_3m = np.concatenate([np.full(3, np.nan), effr[3:] - effr[:-3]])
-    # Fed constrained = high inflation AND not aggressively cutting
-    fed_constrained = (np.nan_to_num(cpi_12) > 3.0) & \
-                      (np.nan_to_num(effr_3m) > -0.5)
+    effr     = m["effr"].values
+    effr_6m  = np.concatenate([np.full(6, np.nan), effr[6:] - effr[:-6]])
+    effr_3m  = np.concatenate([np.full(3, np.nan), effr[3:] - effr[:-3]])
+    t2y      = m["t2y"].values
+    t2y_2m   = np.concatenate([np.full(2, np.nan), t2y[2:] - t2y[:-2]])
+
+    # Fed actually constrained = any of:
+    # 1. Already hiking (effr rising)
+    # 2. Market pricing hikes with hot inflation (2Y surging + CPI>4%)
+    # 3. Fed on hold but inflation won't allow cuts (CPI>3% AND 2Y-EFFR gap small)
+    gap_2y_effr = t2y - effr  # negative = cuts priced, closer to 0 = fewer cuts
+    actually_hiking = np.nan_to_num(effr_6m) > 0.25
+    market_pricing_hikes = (np.nan_to_num(t2y_2m) > 0.25) & \
+                           (np.nan_to_num(cpi_12) > 4.0)
+    cant_cut = (np.nan_to_num(cpi_12) > 3.0) & (gap_2y_effr > -0.75)
+    fed_constrained = actually_hiking | market_pricing_hikes | cant_cut
 
     # Oil rate of change — THE key signal
     oil     = m["oil"].values
@@ -387,8 +402,8 @@ def c3_market_structure(m):
         recovering = (hy < hy_max4 * 0.85) & (hy > 400)
         s += np.where(recovering, -15, 0)
 
-    # Add base of 20
-    s += 20
+    # Add base of 10
+    s += 10
 
     return pd.Series(np.clip(s, 0, 100), index=idx)
 
