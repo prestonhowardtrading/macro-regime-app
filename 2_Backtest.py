@@ -240,7 +240,9 @@ def compute_regime(m):
         n  += 1
     if n > 0:
         gl = (gl / n).clip(-100, 100)
-    s4 = gl.shift(-2).clip(-100, 100)  # 2-month lead
+    # Shift forward 2M for historical lead; fill trailing NaN with current GL
+    # so the present month always has a valid reading (not NaN → Risk-On bug)
+    s4 = gl.shift(-2).fillna(gl).clip(-100, 100)
 
     # ── S5: Price vs 200DMA (15%) ─────────────────────────────────────────
     # S&P 500 monthly vs 12M rolling mean (proxy for 200DMA)
