@@ -144,153 +144,138 @@ def fetch_sp500_data(today_str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_regime(m):
+    idx    = m.index
     t2y    = m["t2y"]
     t10y2y = m["t10y2y"]
     hy     = m["hy_spread"]
-    
+
     hy_1m  = hy.diff(1)
     hy_3m  = hy.diff(3)
     hy_max = hy.rolling(4).max()
-    
-    # ── S1: Rate Shock (25%) ──────────────────────────────────────────────
-    # 2Y yield 4M change — fires Nov 2021 before Jan 2022 market top
+
+    # ── S1: Rate Shock (25%) ─────────────────────────────────────────────
     t2y_4m = t2y.diff(4)
     t2y_2m = t2y.diff(2)
-    
-    s1 = np.where(t2y_4m > 1.5, -80, np.where(t2y_4m > 1.0, -65,
-         np.where(t2y_4m > 0.7, -45, np.where(t2y_4m > 0.4, -25,
-         np.where(t2y_4m > 0.15,-10, np.where(t2y_4m < -1.0,  70,
-         np.where(t2y_4m < -0.5,  45, np.where(t2y_4m < -0.2,  20,
-         np.where(t2y_4m < 0.0,    5, 0)))))))))
-    s1 += np.where(t2y_2m > 0.4, -15, np.where(t2y_2m < -0.4, 15, 0))
-    # Neutralize bullish rate cuts during credit crisis (they're reactive)
-    crisis = hy > 600
-    s1 = pd.Series(np.where(crisis & (s1 > 0), 0, np.clip(s1, -100, 100)),
-                   index=m.index)
+    _s1 = np.where(t2y_4m > 1.5, -80, np.where(t2y_4m > 1.0, -65,
+          np.where(t2y_4m > 0.7, -45, np.where(t2y_4m > 0.4, -25,
+          np.where(t2y_4m > 0.15,-10, np.where(t2y_4m < -1.0,  70,
+          np.where(t2y_4m < -0.5,  45, np.where(t2y_4m < -0.2,  20,
+          np.where(t2y_4m < 0.0,    5, 0)))))))))
+    _s1 += np.where(t2y_2m > 0.4, -15, np.where(t2y_2m < -0.4, 15, 0))
+    _s1  = np.clip(_s1, -100, 100)
+    # Neutralize bullish reading when credit is in crisis
+    _s1  = np.where((hy > 600) & (_s1 > 0), 0, _s1)
+    s1   = pd.Series(_s1, index=idx)
 
-    # ── S2: Yield Curve (15%) ─────────────────────────────────────────────
-    # 10Y-2Y level — inverted = recession warning, steep = bullish
+    # ── S2: Yield Curve (15%) ────────────────────────────────────────────
     yc_3m = t10y2y.diff(3)
-    s2 = np.where(t10y2y > 1.5,  50, np.where(t10y2y > 0.75, 30,
-         np.where(t10y2y > 0.25, 10, np.where(t10y2y > 0.0,   0,
-         np.where(t10y2y > -0.5,-25, np.where(t10y2y > -1.0,-50,-70))))))
-    s2 += np.where(yc_3m > 0.5, 20, np.where(yc_3m < -0.5, -20, 0))
-    s2 = pd.Series(np.clip(s2, -100, 100), index=m.index)
+    _s2   = np.where(t10y2y > 1.5,  50, np.where(t10y2y > 0.75, 30,
+            np.where(t10y2y > 0.25, 10, np.where(t10y2y > 0.0,   0,
+            np.where(t10y2y > -0.5,-25, np.where(t10y2y > -1.0,-50,-70))))))
+    _s2  += np.where(yc_3m > 0.5, 20, np.where(yc_3m < -0.5, -20, 0))
+    s2    = pd.Series(np.clip(_s2, -100, 100), index=idx)
 
-    # ── S3: Credit Spreads (25%) ──────────────────────────────────────────
-    # Level + speed + 1M spike + recovery peak detection
-    s3 = np.where(hy < 300, 75, np.where(hy < 350, 55,
-         np.where(hy < 390, 30, np.where(hy < 430,  5,
-         np.where(hy < 480,-15, np.where(hy < 580,-45,
-         np.where(hy < 750,-70,                    -90)))))))
-    # 3M speed
-    s3 += np.where(hy_3m > 200, -40, np.where(hy_3m > 100, -25,
-          np.where(hy_3m > 50,  -12, np.where(hy_3m < -150,  35,
-          np.where(hy_3m < -75,  20, np.where(hy_3m < -30,    8, 0))))))
-    # 1M spike — catches sudden crises (COVID Feb 2020: +67bps in 1 month)
-    s3 += np.where(hy_1m > 100, -40, np.where(hy_1m > 60, -25,
-          np.where(hy_1m > 35,  -12, 0)))
-    # Recovery: spreads falling from peak = all-clear signal
-    recovering = (hy < hy_max * 0.85) & (hy > 380)
-    s3 += pd.Series(np.where(recovering, 30, 0), index=m.index)
-    # IG spreads as early confirmation
+    # ── S3: Credit Spreads (25%) ─────────────────────────────────────────
+    _s3   = np.where(hy < 300, 75, np.where(hy < 350, 55,
+            np.where(hy < 390, 30, np.where(hy < 430,  5,
+            np.where(hy < 480,-15, np.where(hy < 580,-45,
+            np.where(hy < 750,-70,                    -90)))))))
+    _s3  += np.where(hy_3m > 200, -40, np.where(hy_3m > 100, -25,
+            np.where(hy_3m > 50,  -12, np.where(hy_3m < -150,  35,
+            np.where(hy_3m < -75,  20, np.where(hy_3m < -30,    8, 0))))))
+    _s3  += np.where(hy_1m > 100, -40, np.where(hy_1m > 60, -25,
+            np.where(hy_1m > 35,  -12, 0)))
+    recovering = ((hy < hy_max * 0.85) & (hy > 380)).values
+    _s3  += np.where(recovering, 30, 0)
     if "ig_spread" in m.columns:
         ig    = m["ig_spread"]
         ig_3m = ig.diff(3)
-        s3 += np.where(ig < 0.9, 15, np.where(ig < 1.2,  5,
-              np.where(ig < 1.7,-10, np.where(ig < 2.5,-25,-40))))
-        s3 += np.where(ig_3m < -0.3, 10, np.where(ig_3m > 0.4, -15, 0))
-    s3 = pd.Series(np.clip(s3, -100, 100), index=m.index)
+        _s3  += np.where(ig < 0.9, 15, np.where(ig < 1.2,  5,
+                np.where(ig < 1.7,-10, np.where(ig < 2.5,-25,-40))))
+        _s3  += np.where(ig_3m < -0.3, 10, np.where(ig_3m > 0.4, -15, 0))
+    s3 = pd.Series(np.clip(_s3, -100, 100), index=idx)
 
-    # ── S4: Global Liquidity (20%) ────────────────────────────────────────
-    # Fed + ECB + BOJ + M2 combined 3M ROC, shifted 2 months forward
-    gl = pd.Series(0.0, index=m.index)
-    n  = 0
+    # ── S4: Global Liquidity (20%) ───────────────────────────────────────
+    gl_raw = pd.Series(0.0, index=idx)
+    n = 0
     if "walcl" in m.columns:
         f3m = m["walcl"].pct_change(3) * 100
         f1m = m["walcl"].pct_change(1) * 100
-        cqe = f1m > 8  # crisis QE = neutralize (reactive, not bullish)
-        raw = np.where(f3m > 5,   80, np.where(f3m > 2,   55,
+        cqe = (f1m > 8).values
+        _f  = np.where(f3m > 5,   80, np.where(f3m > 2,   55,
               np.where(f3m > 0.5, 25, np.where(f3m > -0.5,-10,
               np.where(f3m > -2, -30, np.where(f3m > -5,  -55, -80))))))
-        gl += pd.Series(np.where(cqe, 0, raw), index=m.index)
-        n  += 1
+        gl_raw += pd.Series(np.where(cqe, 0, _f), index=idx)
+        n += 1
     if "ecb_assets" in m.columns and not m["ecb_assets"].isna().all():
         e3m = m["ecb_assets"].pct_change(3) * 100
         e1m = m["ecb_assets"].pct_change(1) * 100
-        cqe = e1m > 6
-        raw = np.where(e3m > 3,  55, np.where(e3m > 1,  25,
-              np.where(e3m > 0,   5, np.where(e3m > -1,-15,
-              np.where(e3m > -3, -35,                    -55)))))
-        gl += pd.Series(np.where(cqe, 0, raw), index=m.index)
-        n  += 1
+        cqe = (e1m > 6).values
+        _e  = np.where(e3m > 3, 55, np.where(e3m > 1, 25,
+              np.where(e3m > 0,  5, np.where(e3m > -1,-15,
+              np.where(e3m > -3,-35,                   -55)))))
+        gl_raw += pd.Series(np.where(cqe, 0, _e), index=idx)
+        n += 1
     if "boj_assets" in m.columns and not m["boj_assets"].isna().all():
         b3m = m["boj_assets"].pct_change(3) * 100
-        raw = np.where(b3m > 3,  40, np.where(b3m > 1,  20,
-              np.where(b3m > 0,   5, np.where(b3m > -2,-15,
-                                               -40))))
-        gl += pd.Series(raw, index=m.index)
-        n  += 1
+        _b  = np.where(b3m > 3, 40, np.where(b3m > 1, 20,
+              np.where(b3m > 0,  5, np.where(b3m > -2,-15,-40))))
+        gl_raw += pd.Series(_b, index=idx)
+        n += 1
     if "m2" in m.columns:
         m3m = m["m2"].pct_change(3) * 100
-        raw = np.where(m3m > 2,   30, np.where(m3m > 0.5,  15,
-              np.where(m3m > 0,    3, np.where(m3m > -1,  -15,
-              np.where(m3m > -2,  -30,                      -50)))))
-        gl += pd.Series(raw, index=m.index)
-        n  += 1
+        _m  = np.where(m3m > 2,  30, np.where(m3m > 0.5, 15,
+              np.where(m3m > 0,   3, np.where(m3m > -1, -15,
+              np.where(m3m > -2,-30,                     -50)))))
+        gl_raw += pd.Series(_m, index=idx)
+        n += 1
     if n > 0:
-        gl = (gl / n).clip(-100, 100)
-    # Shift forward 2M for historical lead; fill trailing NaN with current GL
-    # so the present month always has a valid reading (not NaN → Risk-On bug)
-    s4 = gl.shift(-2).fillna(gl).clip(-100, 100)
+        gl_raw = (gl_raw / n).clip(-100, 100)
+    # 2M forward shift — fill trailing NaN with current so present is never NaN
+    s4 = gl_raw.shift(-2).fillna(gl_raw).clip(-100, 100)
 
-    # ── S5: Price vs 200DMA (15%) ─────────────────────────────────────────
-    # S&P 500 monthly vs 12M rolling mean (proxy for 200DMA)
+    # ── S5: Price vs 200DMA (15%) ────────────────────────────────────────
     if "sp500" in m.columns and not m["sp500"].isna().all():
-        sp = m["sp500"]
-        ma200 = sp.rolling(12).mean()
-        pct_vs_200 = (sp / ma200 - 1) * 100
-        s5 = np.where(pct_vs_200 > 10, 40, np.where(pct_vs_200 > 5,  25,
-             np.where(pct_vs_200 > 2,  10, np.where(pct_vs_200 > 0,   3,
-             np.where(pct_vs_200 > -5,-20, np.where(pct_vs_200 > -10,-40,-60))))))
-        s5 = pd.Series(s5, index=m.index)
+        sp      = m["sp500"]
+        ma200   = sp.rolling(12).mean()
+        p200    = (sp / ma200 - 1) * 100
+        _s5     = np.where(p200 > 10, 40, np.where(p200 > 5,  25,
+                  np.where(p200 > 2,  10, np.where(p200 > 0,   3,
+                  np.where(p200 > -5,-20, np.where(p200 > -10,-40,-60))))))
+        s5 = pd.Series(_s5, index=idx)
     else:
-        s5 = pd.Series(0.0, index=m.index)
+        s5 = pd.Series(0.0, index=idx)
 
-    # ── COMPOSITE ─────────────────────────────────────────────────────────
+    # ── COMPOSITE ────────────────────────────────────────────────────────
     comp = (s1*0.25 + s2*0.15 + s3*0.25 + s4*0.20 + s5*0.15).clip(-100, 100)
 
-    # ── OVERRIDE 1: HY 1M spike > 60bps ──────────────────────────────────
-    # Sudden credit blow-up = crisis = force Risk-Off
-    # Validated: catches COVID Feb 2020 (+67bps in 1 month)
-    hy_crisis = hy_1m > 60
-    comp = pd.Series(np.where(hy_crisis, np.minimum(comp, -20), comp),
-                     index=m.index)
+    # ── OVERRIDE 1: Sudden HY spike (>60bps in 1M) ───────────────────────
+    # Catches COVID Feb 2020 (+67bps in one month)
+    comp = pd.Series(
+        np.where(hy_1m > 60, np.minimum(comp.values, -20), comp.values),
+        index=idx)
 
-    # ── OVERRIDE 2: Dual deterioration ────────────────────────────────────
-    # GL declining + price declining + GL already negative
-    # Validates: catches 2025 Feb (GL fell, sp fell, GL was -0.2)
+    # ── OVERRIDE 2: Dual deterioration ───────────────────────────────────
+    # GL declining + price declining + GL already negative → extra -15
     if "walcl" in m.columns and "sp500" in m.columns:
-        gl_roc  = gl.diff(1)
-        sp_roc  = m["sp500"].pct_change(1) * 100 if "sp500" in m.columns \
-                  else pd.Series(0.0, index=m.index)
-        dual_det = (gl_roc < -0.05) & (sp_roc < -1.5) & (gl < 0)
-        comp = pd.Series(np.where(dual_det, comp - 15, comp),
-                         index=m.index).clip(-100, 100)
+        gl_d   = gl_raw.diff(1)
+        sp_d   = m["sp500"].pct_change(1) * 100
+        dd     = (gl_d < -0.05) & (sp_d < -1.5) & (gl_raw < 0)
+        comp   = pd.Series(
+            np.where(dd.values, (comp - 15).clip(-100, 100).values, comp.values),
+            index=idx)
 
     # ── OVERRIDE 3: Recovery floor ────────────────────────────────────────
-    # HY falling from peak + price not deeply negative + GL not collapsing
-    # → set floor at -5 to exit Risk-Off quickly after bear market bottom
-    # Validated: enables 2022-Nov exit, prevents getting stuck in 2023
-    strong_rec = (hy < hy_max * 0.85) & (s5 > -40) & (gl > -0.3) & (hy_3m < 0)
-    comp = pd.Series(np.where(strong_rec, np.maximum(comp, -5), comp),
-                     index=m.index)
+    # HY falling from peak + price not deeply negative + GL recovering
+    # → prevents getting stuck Risk-Off after bear market bottoms
+    rec = ((hy < hy_max * 0.85) & (s5 > -40) & (gl_raw > -0.3) & (hy_3m < 0))
+    comp = pd.Series(
+        np.where(rec.values, np.maximum(comp.values, -5), comp.values),
+        index=idx)
 
     # ── REGIME CLASSIFICATION ─────────────────────────────────────────────
-    # Risk-Off when composite < -10 for 2+ months
-    raw = pd.Series("Risk-On", index=comp.index)
+    raw     = pd.Series("Risk-On", index=idx)
     raw[comp < -10] = "Risk-Off"
-
     final   = raw.copy()
     current = raw.iloc[0]
     dur     = 1
@@ -299,7 +284,7 @@ def compute_regime(m):
         if p != current:
             if dur >= 2:
                 current = p
-                dur     = 1
+                dur = 1
             else:
                 dur += 1
         else:
@@ -307,6 +292,7 @@ def compute_regime(m):
         final.iloc[i] = current
 
     return final, comp, s1, s2, s3, s4, s5
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
