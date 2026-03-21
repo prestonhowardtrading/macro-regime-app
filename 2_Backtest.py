@@ -181,92 +181,71 @@ def fetch_sp500(today_str):
 
 def c1_liquidity_regime(m):
     """
-    Fed stance × M2 growth × market rate pricing.
-    The single most important signal — liquidity drives everything.
-    
-    Score 5-15:  Zero rates + QE + M2 surging = extreme bull (2020-2021)
-    Score 30-45: Neutral / gradual normalization
-    Score 75-90: Aggressive hiking + QT + M2 negative = extreme bear (2022)
+    Fed stance x M2 x rate pricing. Starts at 50 (neutral).
+    Score 10-20 = bull. Score 75-90 = bear.
+    KEY: M2 growth NOT bullish when CPI > 4% (causing the inflation).
     """
     idx = m.index
-    s   = np.zeros(len(idx))
+    s   = np.full(len(idx), 50.0)  # neutral start
 
-    # ── Fed Funds rate pace ────────────────────────────────────────────────
-    # 6M change: hiking = bearish, cutting = bullish
-    effr     = m["effr"].values
-    effr_6m  = np.concatenate([np.full(6, np.nan), effr[6:] - effr[:-6]])
-    effr_12m = np.concatenate([np.full(12, np.nan), effr[12:] - effr[:-12]])
-
-    s += np.where(effr_6m > 3.0,  45,
-         np.where(effr_6m > 2.0,  35,
-         np.where(effr_6m > 1.0,  22,
-         np.where(effr_6m > 0.25,  12,
-         np.where(effr_6m > 0.0,    3,
-         np.where(effr_6m < -1.0, -28,
-         np.where(effr_6m < -0.5, -18,
-         np.where(effr_6m < -0.25,-10,
-         np.where(effr_6m < 0.0,   -3, 0)))))))))
-
-    # ── M2 Money Supply YoY ────────────────────────────────────────────────
-    # Negative M2 = QT = very bearish. Surging M2 = QE = very bullish
-    m2    = m["m2"].values
-    m2_12 = np.concatenate([np.full(12, np.nan),
-                             (m2[12:] / m2[:-12] - 1) * 100])
-    s += np.where(m2_12 < -2,    30,  # QT regime like 2022
-         np.where(m2_12 < -1,    18,
-         np.where(m2_12 < 0,     10,
-         np.where(m2_12 < 3,      2,
-         np.where(m2_12 < 7,     -5,
-         np.where(m2_12 < 12,   -15,
-         np.where(m2_12 < 20,   -22,
-                                -30)))))))  # 2020: M2 +25% = extreme bullish
-
-    # ── 2Y Yield 2M change — market pricing START of hiking cycle ─────────
-    # This fired in Jan 2022: 2Y jumped 73bps in 1 month BEFORE first hike
-    t2y    = m["t2y"].values
-    t2y_2m = np.concatenate([np.full(2, np.nan), t2y[2:] - t2y[:-2]])
-    t2y_4m = np.concatenate([np.full(4, np.nan), t2y[4:] - t2y[:-4]])
     cpi    = m["cpi"].values
     cpi_12 = np.concatenate([np.full(12, np.nan),
                               (cpi[12:] / cpi[:-12] - 1) * 100])
+    hot    = np.nan_to_num(cpi_12) > 4.0  # inflation hot flag
 
-    # 2Y surging + inflation = hiking cycle confirmed
-    hiking_signal = (t2y_2m > 0.25) & (np.nan_to_num(cpi_12) > 3)
-    s += np.where(hiking_signal, 20,
-         np.where(t2y_4m > 1.0, 18,
-         np.where(t2y_4m > 0.5, 10,
-         np.where(t2y_2m < -0.5, -15,
-         np.where(t2y_2m < -0.25,-8, 0)))))
+    # Fed Funds 6M pace
+    effr    = m["effr"].values
+    effr_6m = np.concatenate([np.full(6, np.nan), effr[6:] - effr[:-6]])
+    s += np.where(effr_6m > 3.0,  30, np.where(effr_6m > 2.0,  20,
+         np.where(effr_6m > 1.0,  12, np.where(effr_6m > 0.25,  6,
+         np.where(effr_6m > 0.0,   1, np.where(effr_6m < -1.0,-25,
+         np.where(effr_6m < -0.5,-15, np.where(effr_6m < -0.25,-8,
+         np.where(effr_6m < 0.0,  -2, 0)))))))))
 
-    # ── TIPS Real Yield ────────────────────────────────────────────────────
-    # Highly negative = extremely accommodative. Highly positive = restrictive
+    # EFFR absolute level
+    s += np.where(effr > 4.5, 20, np.where(effr > 4.0, 14,
+         np.where(effr > 3.0,  8, np.where(effr > 2.0,  2,
+         np.where(effr > 1.0,  0, np.where(effr > 0.25,-8, -18))))))
+
+    # M2 YoY — only bullish when CPI low
+    m2    = m["m2"].values
+    m2_12 = np.concatenate([np.full(12, np.nan),
+                             (m2[12:] / m2[:-12] - 1) * 100])
+    m2s   = np.where(m2_12 < -2,  25, np.where(m2_12 < -1,  14,
+            np.where(m2_12 < 0,    6, np.where(m2_12 < 3,    0,
+            np.where(m2_12 < 7,   -6, np.where(m2_12 < 15, -14, -22))))))
+    s    += np.where(hot, np.maximum(m2s, 0), m2s)  # cap bullish M2 when hot
+
+    # 2Y yield — hiking cycle signal
+    t2y    = m["t2y"].values
+    t2y_2m = np.concatenate([np.full(2, np.nan), t2y[2:] - t2y[:-2]])
+    t2y_4m = np.concatenate([np.full(4, np.nan), t2y[4:] - t2y[:-4]])
+    hike   = (np.nan_to_num(t2y_2m) > 0.2) & hot
+    s     += np.where(hike, 15, np.where(t2y_4m > 1.5, 18,
+             np.where(t2y_4m > 1.0, 12, np.where(t2y_4m > 0.5,  6,
+             np.where(t2y_2m < -0.5,-15, np.where(t2y_2m < -0.25,-8, 0))))))
+
+    # TIPS real yield
     if "tips10y" in m.columns:
         tips = m["tips10y"].values
-        s += np.where(tips > 2.0,   15,
-             np.where(tips > 1.0,    8,
-             np.where(tips > 0.5,    4,
-             np.where(tips > 0.0,    1,
-             np.where(tips > -0.5,  -4,
-             np.where(tips > -1.5, -10,
-                                   -18))))))
+        s += np.where(tips > 2.0, 10, np.where(tips > 1.0,  5,
+             np.where(tips > 0.5,  2, np.where(tips > 0.0,  0,
+             np.where(tips > -0.5,-3, np.where(tips > -1.5,-7, -12))))))
 
-    # ── Global Liquidity (no forward shift — avoids NaN bug) ──────────────
+    # Global Liquidity (Fed + ECB, no shift to avoid NaN)
     gl = np.zeros(len(idx))
     n  = 0
-    for col, cqe_thresh in [("walcl", 8), ("ecb_assets", 6)]:
+    for col, thr in [("walcl", 8), ("ecb_assets", 6)]:
         if col in m.columns:
             v   = m[col].values
             r3  = np.concatenate([np.full(3, np.nan),
                                    (v[3:] / v[:-3] - 1) * 100])
             r1  = np.concatenate([np.full(1, np.nan),
                                    (v[1:] / v[:-1] - 1) * 100])
-            cqe = np.nan_to_num(r1) > cqe_thresh
-            raw = np.where(r3 > 4,   -15,
-                  np.where(r3 > 1.5, -8,
-                  np.where(r3 > 0,   -3,
-                  np.where(r3 > -2,   6,
-                  np.where(r3 > -5,  12,
-                                      20)))))
+            cqe = np.nan_to_num(r1) > thr
+            raw = np.where(r3 > 4, -10, np.where(r3 > 1.5, -5,
+                  np.where(r3 > 0, -2,  np.where(r3 > -2,   5,
+                  np.where(r3 > -5, 10,                     15)))))
             gl += np.where(cqe, 0, raw)
             n  += 1
     if n > 0:
@@ -277,91 +256,66 @@ def c1_liquidity_regime(m):
 
 def c2_cycle_oil(m):
     """
-    Business cycle position + oil constraint.
+    Business cycle position + oil constraint. Starts at 30 (slightly bearish lean
+    since we are in late cycle). Adjusts based on oil + employment + LEI.
     
-    KEY INSIGHT: Oil is only bearish when Fed CANNOT cut.
-    (CPI > 3%) AND (Fed not cutting) = Fed constrained = oil spike = disaster
-    (Oil crashes) = deflationary = Fed CAN respond = not bearish
-    
-    Score 10-20: Strong cycle, Fed can respond, oil stable
-    Score 70-85: Late cycle, oil spiking, Fed constrained (2022, 2026)
-    Score 10-15: Oil crashing, Fed easing (COVID 2020)
+    Oil only bearish when Fed CONSTRAINED (CPI>3%, not cutting fast).
+    Oil crashing = deflationary = bullish (COVID 2020).
     """
     idx = m.index
-    s   = np.zeros(len(idx))
+    s   = np.full(len(idx), 30.0)  # start slightly above neutral
 
-    # ── Is Fed constrained? (can't cut because of inflation) ──────────────
-    cpi     = m["cpi"].values
-    cpi_12  = np.concatenate([np.full(12, np.nan),
-                               (cpi[12:] / cpi[:-12] - 1) * 100])
+    cpi    = m["cpi"].values
+    cpi_12 = np.concatenate([np.full(12, np.nan),
+                              (cpi[12:] / cpi[:-12] - 1) * 100])
     effr    = m["effr"].values
     effr_3m = np.concatenate([np.full(3, np.nan), effr[3:] - effr[:-3]])
-    # Fed constrained = CPI above 3% AND Fed not already cutting fast
+    # Fed constrained = high inflation AND not aggressively cutting
     fed_constrained = (np.nan_to_num(cpi_12) > 3.0) & \
                       (np.nan_to_num(effr_3m) > -0.5)
 
-    # ── Oil rate of change ─────────────────────────────────────────────────
+    # Oil rate of change — THE key signal
     oil     = m["oil"].values
     oil_1m  = np.concatenate([np.full(1, np.nan),
                                (oil[1:] / oil[:-1] - 1) * 100])
     oil_3m  = np.concatenate([np.full(3, np.nan),
                                (oil[3:] / oil[:-3] - 1) * 100])
-    oil_12m = np.concatenate([np.full(12, np.nan),
-                               oil[12:] / oil[:-12] - 1]) * 100
 
-    # Oil bearish signal — only counts when Fed is constrained
-    oil_bear = np.where(oil_1m > 25,  40,
-               np.where(oil_1m > 15,  25,
-               np.where(oil_1m > 8,   12,
-               np.where(oil_3m > 30,  20,
-               np.where(oil_3m > 20,  12,
-               np.where(oil_3m > 10,   6, 0))))))
-    # Apply constraint: if Fed CAN respond (not constrained), oil spike is temporary
-    s += np.where(fed_constrained, oil_bear, oil_bear * 0.3)
+    # Bearish oil signal — only full strength when Fed constrained
+    oil_b = np.where(oil_1m > 25, 40, np.where(oil_1m > 15, 25,
+            np.where(oil_1m > 8,  12, np.where(oil_3m > 30, 20,
+            np.where(oil_3m > 20, 12, np.where(oil_3m > 10,  6, 0))))))
+    s += np.where(fed_constrained, oil_b, oil_b * 0.25)
 
-    # Oil bullish (crashing = deflationary = Fed can respond = good for risk)
-    oil_bull = np.where(oil_1m < -20, -25,  # COVID: oil went to -$37
-               np.where(oil_1m < -12, -15,
-               np.where(oil_1m < -6,   -8,
-               np.where(oil_3m < -25, -15,
-               np.where(oil_3m < -15,  -8, 0)))))
-    s += oil_bull
+    # Oil bullish (crashing = deflationary = Fed can respond)
+    s += np.where(oil_1m < -20, -25, np.where(oil_1m < -12, -15,
+         np.where(oil_1m < -6,   -8, np.where(oil_3m < -25, -15,
+         np.where(oil_3m < -15,  -8,  0)))))
 
-    # ── Business cycle position ────────────────────────────────────────────
-    # LEI 6M trend
+    # LEI 6M trend (Conference Board Leading Economic Index)
     if "lei" in m.columns:
         lei   = m["lei"].values
         lei_6 = np.concatenate([np.full(6, np.nan),
                                  (lei[6:] / lei[:-6] - 1) * 100])
-        s += np.where(lei_6 > 3,   -15,
-             np.where(lei_6 > 1,    -8,
-             np.where(lei_6 > 0,    -2,
-             np.where(lei_6 > -1,    5,
-             np.where(lei_6 > -3,   12,
-                                     20)))))
+        s += np.where(lei_6 > 3,  -18, np.where(lei_6 > 1,  -10,
+             np.where(lei_6 > 0,   -3, np.where(lei_6 > -1,   6,
+             np.where(lei_6 > -3,  14,                         22)))))
 
     # Employment level YoY — Cowen: "going negative = recession"
     if "payems" in m.columns:
         pay   = m["payems"].values
         p_yoy = np.concatenate([np.full(12, np.nan),
                                  (pay[12:] / pay[:-12] - 1) * 100])
-        s += np.where(p_yoy > 2.5,  -12,
-             np.where(p_yoy > 1.5,   -7,
-             np.where(p_yoy > 0.5,   -2,
-             np.where(p_yoy > 0.0,    5,
-             np.where(p_yoy > -0.5,  15,
-                                      25)))))
+        s += np.where(p_yoy > 2.5, -15, np.where(p_yoy > 1.5,  -8,
+             np.where(p_yoy > 0.5,  -2, np.where(p_yoy > 0.0,   6,
+             np.where(p_yoy > -0.5, 16,                          28)))))
 
-    # Inflation level — but only bearish when combined with constrained Fed
-    cpi_pressure = np.where(np.nan_to_num(cpi_12) > 6,   15,
-                   np.where(np.nan_to_num(cpi_12) > 4,    8,
-                   np.where(np.nan_to_num(cpi_12) > 3,    4,
-                   np.where(np.nan_to_num(cpi_12) > 2,    0,
-                             -5))))
-    s += np.where(fed_constrained, cpi_pressure, cpi_pressure * 0.2)
-
-    # Add base of 20 (neutral)
-    s += 20
+    # CPI — only adds to bearish when Fed is constrained
+    cpi_p = np.where(np.nan_to_num(cpi_12) > 6,   15,
+            np.where(np.nan_to_num(cpi_12) > 4,    8,
+            np.where(np.nan_to_num(cpi_12) > 3,    4,
+            np.where(np.nan_to_num(cpi_12) > 2,    0, -4))))
+    s += np.where(fed_constrained, cpi_p, cpi_p * 0.2)
 
     return pd.Series(np.clip(s, 0, 100), index=idx)
 
