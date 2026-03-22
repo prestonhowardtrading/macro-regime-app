@@ -433,27 +433,35 @@ def score_market_structure(m):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_composite(s1, s2, s3, s4):
-    """S1:30% S2:25% S3:25% S4:20%"""
-    return (s1*0.30 + s2*0.25 + s3*0.25 + s4*0.20).clip(0, 100)
+    """
+    S1:15% — Rate shock (leads 2022 but irrelevant for 2026 where 2Y is falling)
+    S2:35% — Financial stress (S&P 6M ROC, HY spreads, MOVE — works for both)
+    S3:35% — Oil/inflation constraint (key for 2026: oil +35% + Fed can't cut)
+    S4:15% — Market structure (200DMA direction — confirms but doesn't lead)
+    """
+    return (s1*0.15 + s2*0.35 + s3*0.35 + s4*0.15).clip(0, 100)
 
 
 def classify_regime(composite, m, min_months=2):
     """
-    Risk-Off when composite >= 53.
+    Risk-Off when composite >= 42.
     Flash crash override: HY spikes fast + oil NOT the cause + M2 growing
     Min 2-month hold.
     """
     raw = pd.Series("Risk-On", index=composite.index)
-    raw[composite >= 38] = "Caution"
-    raw[composite >= 53] = "Risk-Off"
+    raw[composite >= 30] = "Caution"
+    raw[composite >= 42] = "Risk-Off"
 
-    # Flash crash: credit blowup but Fed CAN respond (oil falling, M2 growing)
+    # Flash crash: credit blowup but Fed CAN respond (oil falling/flat, M2 growing)
+    # COVID Mar 2020: HY +544bps in 2M, oil -60%, M2 surging
     if "hy_spread" in m.columns and "oil" in m.columns and "m2" in m.columns:
         hy_2m  = m["hy_spread"].diff(2)
+        hy_1m  = m["hy_spread"].diff(1)
         oil_1m = m["oil"].pct_change(1) * 100
         m2_yoy = m["m2"].pct_change(12) * 100
-        flash  = (hy_2m > 400) & (oil_1m < 8) & (m2_yoy > 2)
-        raw[flash] = "Risk-Off"  # still brief risk-off, exits fast via min_hold
+        # Flash fires when credit spikes fast AND oil is not the driver
+        flash  = ((hy_2m > 300) | (hy_1m > 100)) & (oil_1m < 10) & (m2_yoy > 2)
+        raw[flash] = "Risk-Off"
 
     final   = raw.copy()
     current = raw.iloc[0]
@@ -531,7 +539,7 @@ st.markdown(
     'font-family:\'DM Mono\',monospace;">' + cur_reg.upper() + '</div>'
     '<div style="font-size:11px;color:#555;margin-top:6px;">'
     'Bear Score ' + str(cur_score) + ' / 100 · '
-    '38 = Caution · 53 = Risk-Off</div>'
+    '30 = Caution · 42 = Risk-Off</div>'
     '</div>',
     unsafe_allow_html=True
 )
@@ -675,16 +683,16 @@ ax1.set_title(
 )
 
 # Bear score
-ax2.fill_between(sc_disp.index, sc_disp, 45,
-                 where=sc_disp >= 45, color="#FF4757", alpha=0.35, interpolate=True)
-ax2.fill_between(sc_disp.index, sc_disp, 45,
-                 where=sc_disp < 45,  color="#00D4AA", alpha=0.35, interpolate=True)
+ax2.fill_between(sc_disp.index, sc_disp, 36,
+                 where=sc_disp >= 36, color="#FF4757", alpha=0.35, interpolate=True)
+ax2.fill_between(sc_disp.index, sc_disp, 36,
+                 where=sc_disp < 36,  color="#00D4AA", alpha=0.35, interpolate=True)
 ax2.plot(sc_disp.index, sc_disp.values, color="#ccc", lw=1.0, zorder=5)
-ax2.axhline(45, color="#333",    lw=0.8)
-ax2.axhline(38, color="#f59e0b", lw=0.5, ls=":", alpha=0.5)
-ax2.axhline(53, color="#FF4757", lw=0.5, ls=":", alpha=0.5)
-ax2.text(sc_disp.index[-1], 38, "  Caution",  color="#f59e0b", fontsize=6, va="bottom")
-ax2.text(sc_disp.index[-1], 53, "  Risk-Off", color="#FF4757", fontsize=6, va="bottom")
+ax2.axhline(35, color="#333",    lw=0.8)
+ax2.axhline(30, color="#f59e0b", lw=0.5, ls=":", alpha=0.5)
+ax2.axhline(42, color="#FF4757", lw=0.5, ls=":", alpha=0.5)
+ax2.text(sc_disp.index[-1], 30, "  Caution",  color="#f59e0b", fontsize=6, va="bottom")
+ax2.text(sc_disp.index[-1], 42, "  Risk-Off", color="#FF4757", fontsize=6, va="bottom")
 ax2.set_ylim(0, 100)
 ax2.set_xlim(sc_disp.index[0], sc_disp.index[-1])
 ax2.set_ylabel("Bear Score", color="#666", fontsize=7, labelpad=6)
