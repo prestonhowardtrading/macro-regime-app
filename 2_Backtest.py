@@ -238,8 +238,8 @@ def score_financial_stress(m):
         # 6M ROC — Jordi's first recession warning
         s += np.where(np.nan_to_num(sp_6m) < -12,  30,
              np.where(np.nan_to_num(sp_6m) < -6,   18,
-             np.where(np.nan_to_num(sp_6m) < -2,    8,
-             np.where(np.nan_to_num(sp_6m) < 0,     3,
+             np.where(np.nan_to_num(sp_6m) < -3,   10,
+             np.where(np.nan_to_num(sp_6m) < 0,     4,
              np.where(np.nan_to_num(sp_6m) > 15,  -18,
              np.where(np.nan_to_num(sp_6m) > 8,   -10,
              np.where(np.nan_to_num(sp_6m) > 3,    -4, 0)))))))
@@ -270,10 +270,10 @@ def score_financial_stress(m):
              np.where(np.nan_to_num(hy_3m) > 60,   12,
              np.where(np.nan_to_num(hy_3m) < -150, -20,
              np.where(np.nan_to_num(hy_3m) < -75,  -12, 0)))))
-        # 1M spike — catches COVID Feb 2020 (+67bps in 1 month)
-        s += np.where(np.nan_to_num(hy_1m) > 120,  40,
-             np.where(np.nan_to_num(hy_1m) > 80,   25,
-             np.where(np.nan_to_num(hy_1m) > 50,   14, 0)))
+        # 1M spike — catches COVID Feb 2020 (+67bps) and 2026 war spike (+110bps)
+        s += np.where(np.nan_to_num(hy_1m) > 100,  40,
+             np.where(np.nan_to_num(hy_1m) > 60,   25,
+             np.where(np.nan_to_num(hy_1m) > 35,   14, 0)))
         # Recovery from peak
         recovering = (hy < hy_max * 0.85) & (hy > 400)
         s += np.where(recovering, -18, 0)
@@ -331,7 +331,7 @@ def score_oil_inflation(m):
     # FIXED: Fed actually constrained definition
     actually_hiking     = np.nan_to_num(effr_6m) > 0.25
     market_prices_hikes = (np.nan_to_num(t2y_2m) > 0.25) & (np.nan_to_num(cpi_12) > 4.0)
-    cant_cut            = (np.nan_to_num(cpi_12) > 3.0) & (gap > -0.75)
+    cant_cut            = (np.nan_to_num(cpi_12) > 2.8) & (gap > -0.75)
     fed_constrained     = actually_hiking | market_prices_hikes | cant_cut
 
     # ── Oil rate of change ─────────────────────────────────────────────────
